@@ -1,0 +1,32 @@
+# Core
+numpy>=1.24
+pandas>=2.0
+geopandas>=0.13
+shapely>=2.0
+
+# Imagery
+requests>=2.31
+Pillow>=10.0
+
+# Climate data
+xarray>=2024.1
+netCDF4>=1.6
+cdsapi>=0.7
+
+# Data storage
+pyarrow>=14.0
+
+# Utilities
+python-dotenv>=1.0
+tqdm>=4.66
+colorlog>=6.8
+
+# Dev / Testing
+pytest>=7.4
+jupyter>=1.0
+matplotlib>=3.8
+
+# Note: SAM3 is installed separately on Google Colab (requires CUDA 12.6+):
+#   git clone https://github.com/facebookresearch/sam3.git
+#   cd sam3 && pip install -e .
+#   Also needs: torch>=2.7.0, torchvision>=0.22
