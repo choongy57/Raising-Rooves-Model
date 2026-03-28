@@ -69,6 +69,7 @@ def run_stage1(
     suburb_name: str,
     zoom: int = DEFAULT_ZOOM,
     skip_download: bool = False,
+    max_tiles: int | None = None,
 ) -> pd.DataFrame:
     """
     Run the full Stage 1 pipeline for a single suburb.
@@ -109,6 +110,16 @@ def run_stage1(
     if not tile_paths:
         logger.warning("No tiles found for '%s'. Cannot proceed.", suburb.name)
         return pd.DataFrame()
+
+    # ── Optional: cap tile count for smoke tests / CPU runs ──────────────
+    if max_tiles is not None and max_tiles < len(tile_paths):
+        logger.warning(
+            "max_tiles=%d: processing only %d/%d tiles (smoke-test mode).",
+            max_tiles,
+            max_tiles,
+            len(tile_paths),
+        )
+        tile_paths = tile_paths[:max_tiles]
 
     # ── Step 2: Load segmentation masks ──────────────────────────────────
     logger.info("Step 2/4: Loading segmentation masks...")

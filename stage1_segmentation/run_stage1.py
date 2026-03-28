@@ -5,6 +5,7 @@ Usage:
     python -m stage1_segmentation.run_stage1 --suburb "Richmond"
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --debug
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --skip-download
+    python -m stage1_segmentation.run_stage1 --suburb "Richmond" --max-tiles 10
     python -m stage1_segmentation.run_stage1 --list-suburbs
 """
 
@@ -42,6 +43,12 @@ def main():
         help="Enable debug-level logging for detailed output",
     )
     parser.add_argument(
+        "--max-tiles",
+        type=int,
+        default=None,
+        help="Limit processing to first N tiles (useful for CPU smoke tests, e.g. --max-tiles 10)",
+    )
+    parser.add_argument(
         "--list-suburbs",
         action="store_true",
         help="List available suburbs and exit",
@@ -64,11 +71,15 @@ def main():
 
     logger.info("Starting Stage 1 for suburb: %s", args.suburb)
 
+    if args.max_tiles:
+        logger.info("Smoke-test mode: capping at %d tiles.", args.max_tiles)
+
     try:
         df = run_stage1(
             suburb_name=args.suburb,
             zoom=args.zoom,
             skip_download=args.skip_download,
+            max_tiles=args.max_tiles,
         )
         if df.empty:
             logger.warning("No results produced. Check logs for details.")
