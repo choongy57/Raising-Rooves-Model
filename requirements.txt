@@ -7,6 +7,10 @@ shapely>=2.0
 # Imagery
 requests>=2.31
 Pillow>=10.0
+opencv-python>=4.8
+
+# Gemini Vision API (roof segmentation — replaces SAM3/Colab)
+google-generativeai>=0.8
 
 # Climate data
 xarray>=2024.1
@@ -26,7 +30,5 @@ pytest>=7.4
 jupyter>=1.0
 matplotlib>=3.8
 
-# Note: SAM3 is installed separately on Google Colab (requires CUDA 12.6+):
-#   git clone https://github.com/facebookresearch/sam3.git
-#   cd sam3 && pip install -e .
-#   Also needs: torch>=2.7.0, torchvision>=0.22
+# Note: SAM3/Colab workflow is superseded by Gemini Vision API.
+# SAM3 is no longer required for Stage 1.

@@ -29,6 +29,7 @@ RESEARCH_DIR = PROJECT_ROOT / "research" / "findings"
 # ── API Keys (from .env) ────────────────────────────────────────────────────
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 HF_TOKEN = os.getenv("HF_TOKEN", "")
 CDS_API_KEY = os.getenv("CDS_API_KEY", "")
 
