@@ -6,11 +6,13 @@ Usage:
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --debug
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --skip-download
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --max-tiles 10
+    python -m stage1_segmentation.run_stage1 --suburb "Richmond" --footprint-file data/raw/footprints/australia.geojson
     python -m stage1_segmentation.run_stage1 --list-suburbs
 """
 
 import argparse
 import sys
+from pathlib import Path
 
 from config.suburbs import list_suburbs
 from shared.logging_config import setup_logging
@@ -49,6 +51,16 @@ def main():
         help="Limit processing to first N tiles (useful for CPU smoke tests, e.g. --max-tiles 10)",
     )
     parser.add_argument(
+        "--footprint-file",
+        type=Path,
+        default=None,
+        help=(
+            "Optional: path to local GeoJSON footprints file "
+            "(e.g. Microsoft AU Building Footprints). "
+            "If omitted, queries OSM Overpass API."
+        ),
+    )
+    parser.add_argument(
         "--list-suburbs",
         action="store_true",
         help="List available suburbs and exit",
@@ -80,6 +92,7 @@ def main():
             zoom=args.zoom,
             skip_download=args.skip_download,
             max_tiles=args.max_tiles,
+            footprint_file=args.footprint_file,
         )
         if df.empty:
             logger.warning("No results produced. Check logs for details.")

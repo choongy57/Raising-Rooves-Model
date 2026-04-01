@@ -351,6 +351,71 @@ def _load_msft_footprints(
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
+def query_buildings_in_bbox(
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    local_file: Optional[Path] = None,
+    tile_centre_lat: Optional[float] = None,
+    tile_centre_lon: Optional[float] = None,
+    zoom: int = DEFAULT_ZOOM,
+    tile_size: int = DEFAULT_TILE_SIZE,
+) -> list[BuildingFootprint]:
+    """
+    Return all building footprints within an arbitrary bounding box.
+
+    Designed for suburb-level queries — one Overpass call covers the
+    entire suburb rather than issuing a separate call per tile.
+
+    Args:
+        south/west/north/east: Bounding box in WGS84.
+        local_file: Optional local GeoJSON file (Microsoft AU footprints).
+        tile_centre_lat/lon: If provided, also populate pixel polygons on
+            a tile centred here. Leave None to skip pixel projection.
+        zoom/tile_size: Used only when tile_centre_* are set.
+
+    Returns:
+        List of BuildingFootprint objects, deduplicated by building_id.
+    """
+    centre_lat = tile_centre_lat or (south + north) / 2
+    centre_lon = tile_centre_lon or (west + east) / 2
+
+    if local_file is not None:
+        if not local_file.exists():
+            raise FileNotFoundError(
+                f"Local footprint file not found: {local_file}\n"
+                "Download from: https://github.com/microsoft/AustraliaBuildingFootprints"
+            )
+        footprints = _load_msft_footprints(
+            local_file, south, west, north, east,
+            centre_lat, centre_lon, zoom, tile_size,
+        )
+    else:
+        logger.info(
+            "OSM Overpass query for suburb bbox (%.5f,%.5f)->(%.5f,%.5f)",
+            south, west, north, east,
+        )
+        data = _overpass_query(south, west, north, east)
+        footprints = _osm_response_to_footprints(
+            data, centre_lat, centre_lon, zoom, tile_size
+        )
+
+    # Deduplicate by building_id (shouldn't happen with OSM, but defensive)
+    seen: set[str] = set()
+    unique: list[BuildingFootprint] = []
+    for f in footprints:
+        if f.building_id not in seen:
+            seen.add(f.building_id)
+            unique.append(f)
+
+    logger.info(
+        "Found %d unique buildings in bbox | total area %.0f m2",
+        len(unique), sum(b.area_m2 for b in unique),
+    )
+    return unique
+
+
 def query_buildings_in_tile(
     centre_lat: float,
     centre_lon: float,
