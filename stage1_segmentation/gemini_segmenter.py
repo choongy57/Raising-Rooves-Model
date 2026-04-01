@@ -37,10 +37,10 @@ logger = setup_logging("gemini_segmenter")
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL = "gemini-2.0-flash"
-# Fallback models tried in order when the primary hits a quota wall.
+GEMINI_MODEL = "gemini-2.5-flash"
+# Fallback models tried in order when the primary hits a quota wall or 404.
 # Must be valid names as returned by client.models.list().
-GEMINI_FALLBACK_MODELS = ["gemini-2.0-flash-lite", "gemini-2.5-flash"]
+GEMINI_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
 GEMINI_RPM_FREE = 15                    # requests per minute on free tier
 GEMINI_RPM_DELAY = 60.0 / GEMINI_RPM_FREE  # ~4 s between calls, free tier
 MAX_RETRIES = 4
@@ -125,6 +125,12 @@ def _is_quota_error(exc: Exception) -> bool:
     """Return True if the exception is a rate-limit / quota exhaustion error."""
     s = str(exc)
     return "429" in s or "RESOURCE_EXHAUSTED" in s
+
+
+def _is_model_not_found(exc: Exception) -> bool:
+    """Return True for 404 model-unavailable errors (skip to next fallback immediately)."""
+    s = str(exc)
+    return "404" in s and ("NOT_FOUND" in s or "no longer available" in s or "not found" in s.lower())
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -274,6 +280,12 @@ def segment_tile(
                         "Get a new key at https://aistudio.google.com/app/apikey "
                         "and update GEMINI_API_KEY in your .env file."
                     ) from exc
+                if _is_model_not_found(exc):
+                    logger.warning(
+                        "Model %s not available for this API key -- trying next model",
+                        model_name,
+                    )
+                    break  # skip immediately to next fallback
                 if _is_quota_error(exc):
                     wait = _parse_retry_delay(exc)
                     if attempt == MAX_RETRIES:
