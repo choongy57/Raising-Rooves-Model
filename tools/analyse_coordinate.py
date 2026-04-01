@@ -189,18 +189,25 @@ def annotate_tile(
         # Filled semi-transparent polygon
         cv2.fillPoly(overlay, [pts], colour)
 
-        # Solid outline
+        # Solid outline (thicker for visibility)
         cv2.polylines(img, [pts], isClosed=True, color=colour, thickness=2)
 
-        # Area label at centroid
+        # Area label: dark background box + white text for readability
         area_m2 = pixels_to_area_m2(seg.pixel_count, tile_lat, zoom)
         cx, cy = int(seg.centroid[0]), int(seg.centroid[1])
         label = f"{area_m2:.0f}m2"
-        cv2.putText(img, label, (cx - 15, cy), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.35, (255, 255, 255), 1, cv2.LINE_AA)
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.45
+        thickness = 1
+        (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+        tx = max(0, cx - tw // 2)
+        ty = max(th + 4, cy)
+        # Dark semi-transparent background behind text
+        cv2.rectangle(img, (tx - 2, ty - th - 2), (tx + tw + 2, ty + baseline), (0, 0, 0), -1)
+        cv2.putText(img, label, (tx, ty), font, font_scale, colour, thickness, cv2.LINE_AA)
 
-    # Blend overlay at 30% opacity
-    cv2.addWeighted(overlay, 0.30, img, 0.70, 0, img)
+    # Blend overlay at 25% opacity
+    cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
     return img
 
 

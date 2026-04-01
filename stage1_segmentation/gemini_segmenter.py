@@ -40,7 +40,7 @@ logger = setup_logging("gemini_segmenter")
 GEMINI_MODEL = "gemini-2.0-flash"
 # Fallback models tried in order when the primary hits a quota wall.
 # Must be valid names as returned by client.models.list().
-GEMINI_FALLBACK_MODELS = ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
+GEMINI_FALLBACK_MODELS = ["gemini-2.0-flash-lite", "gemini-2.5-flash"]
 GEMINI_RPM_FREE = 15                    # requests per minute on free tier
 GEMINI_RPM_DELAY = 60.0 / GEMINI_RPM_FREE  # ~4 s between calls, free tier
 MAX_RETRIES = 4
@@ -51,19 +51,34 @@ MIN_SEGMENT_PIXELS = 300                # discard fragments smaller than this (~
 # ── Structured prompt ────────────────────────────────────────────────────────
 
 _PROMPT = """
-You are analysing a satellite image of a Melbourne suburb (640x640 px, ~0.3 m/pixel).
+You are a building analyst examining a top-down satellite image of Melbourne, Australia.
+Resolution: ~0.3 m/pixel, image size: 640x640 pixels.
 
-Identify the SUBSTANTIAL rooftops (buildings with roofs at least ~5x5 metres, i.e. ~17x17 pixels).
-Ignore tiny shadows, cars, footpaths, or features smaller than a garden shed.
-Return at most 30 rooftops — if there are more, pick the 30 largest.
+TASK: Find every visible building rooftop and trace its outline precisely.
 
-For each roof return:
-  - "polygon": [[x,y], ...] — 6-12 integer pixel vertices (0-639) tracing the roof outline
-  - "material": one of "metal", "tile", "concrete", "unknown"
-  - "colour": one of "light", "dark", "red", "grey", "blue", "green", "brown", "unknown"
-  - "confidence": 0.0-1.0
+WHAT COUNTS AS A ROOF:
+- Flat commercial/industrial roofs: large grey, white, or silver rectangular surfaces,
+  often with HVAC units, solar panels, skylights, or vents on top
+- Residential roofs: smaller peaked/hip roofs, typically terracotta (red/brown),
+  concrete tile (grey), or metal (silver/dark grey)
+- Warehouse roofs: corrugated metal, often long rectangular shapes
 
-Return ONLY a valid JSON array. If no roofs are visible return [].
+DO NOT include: roads, car parks, footpaths, gardens, trees, cars, or bare ground.
+Each distinct building section is a SEPARATE polygon — do not merge adjacent buildings.
+
+HOW TO TRACE ACCURATELY:
+- Follow the visible outer edge of the roof surface tightly
+- Use 4 vertices for a simple rectangle, up to 12 for L-shaped or complex roofs
+- The polygon must NOT spill into adjacent roads or car parks
+- If a large roof complex has multiple distinct sections, return each as its own polygon
+
+FOR EACH ROOF RETURN (as a JSON object):
+  "polygon": [[x,y], [x,y], ...] — integer pixel coords, range 0-639
+  "material": "metal" | "tile" | "concrete" | "unknown"
+  "colour": "light" | "dark" | "red" | "grey" | "blue" | "green" | "brown" | "unknown"
+  "confidence": float 0.0-1.0
+
+Return ONLY a valid JSON array of these objects. No explanation. If no roofs, return [].
 """
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
@@ -298,6 +313,19 @@ def segment_tile(
         )
 
     roof_dicts = _parse_response(raw)
+
+    # Sanity check: if >10 roofs and all have nearly identical areas, the model
+    # hallucinated a regular grid rather than detecting real roofs — discard.
+    if len(roof_dicts) > 10:
+        confidences = [r.get("confidence", 0) for r in roof_dicts]
+        if max(confidences) - min(confidences) < 0.01:
+            logger.warning(
+                "%s: model returned %d roofs with identical confidence (%.2f) -- "
+                "likely a grid hallucination, discarding",
+                tile_path.name, len(roof_dicts), confidences[0],
+            )
+            roof_dicts = []
+
     polygons_for_mask: list[list[list[int]]] = []
     segments: list[GeminiRoofSegment] = []
 
@@ -309,7 +337,13 @@ def segment_tile(
         # Pixel count from filled polygon
         single_mask = _polygons_to_mask([poly], size=DEFAULT_TILE_SIZE)
         pixel_count = int(single_mask.sum())
+        tile_pixels = DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE
         if pixel_count < MIN_SEGMENT_PIXELS:
+            continue
+        # Discard implausibly large polygons (>35% of tile = almost certainly
+        # Gemini merging multiple buildings or including car parks / roads)
+        if pixel_count > tile_pixels * 0.35:
+            logger.debug("Discarding oversized polygon: %d px (%.0f%% of tile)", pixel_count, pixel_count / tile_pixels * 100)
             continue
 
         polygons_for_mask.append(poly)
