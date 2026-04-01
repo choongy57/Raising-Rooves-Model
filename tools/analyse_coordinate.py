@@ -1,9 +1,14 @@
 """
-MVP Coordinate Analysis Tool — Raising Rooves
+MVP Coordinate Analysis Tool - Raising Rooves
 
-Given a lat/lon coordinate, calls the Google Solar API to get pre-computed
-roof segment data for the nearest building, downloads the satellite tile,
-and saves an annotated image showing outlines + stats.
+Given a lat/lon coordinate, queries building footprint polygons for the
+surrounding tile area, downloads the satellite tile, and saves an annotated
+image showing each building outline with its area label.
+
+Data source: OpenStreetMap Overpass API (no key, no download required).
+Local alternative: Microsoft Australia Building Footprints GeoJSON file
+(download from https://github.com/microsoft/AustraliaBuildingFootprints,
+then pass --footprint-file path/to/file.geojson).
 
 Usage:
     # By coordinate:
@@ -12,17 +17,16 @@ Usage:
     # By suburb name (uses centroid from config):
     python -m tools.analyse_coordinate --suburb Clayton
 
+    # With local MS Building Footprints file:
+    python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --footprint-file data/raw/footprints/australia.geojson
+
     # Debug logging:
     python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --debug
 
 Outputs (saved to data/output/):
-    - <tag>_annotated.png   : satellite tile with coloured roof segment polygons
-    - <tag>_roofs.csv       : per-segment area, pitch, azimuth, sunshine hours
+    - <tag>_annotated.png   : satellite tile with coloured building polygon overlays
+    - <tag>_buildings.csv   : per-building area, centroid lat/lon, source
     - <tag>_summary.txt     : totals printed to console and saved to file
-
-Requirements:
-    Solar API must be enabled in your Google Cloud project.
-    Enable at: https://console.cloud.google.com/apis/api/solar.googleapis.com
 """
 
 import argparse
@@ -53,9 +57,9 @@ from shared.file_io import ensure_dir
 from shared.geo_utils import latlon_to_tile, tile_centre_latlon
 from shared.logging_config import setup_logging
 from shared.validation import validate_env_vars
-from stage1_segmentation.solar_api_segmenter import (
-    SolarBuildingResult,
-    segment_building,
+from stage1_segmentation.building_footprint_segmenter import (
+    FootprintQueryResult,
+    query_buildings_in_tile,
 )
 
 logger = setup_logging("analyse_coordinate")
@@ -66,11 +70,11 @@ _COLOURS = [
     (0, 255, 120),
     (255, 80,  80),
     (255, 0,  200),
-    (0,  180, 0),
-    (180, 0,  255),
+    (0,  180,   0),
+    (180,  0, 255),
     (0,  255, 255),
-    (255, 140, 0),
-    (200, 200, 0),
+    (255, 140,   0),
+    (200, 200,   0),
     (0,  100, 255),
 ]
 
@@ -97,7 +101,10 @@ def _download_tile(lat: float, lon: float, zoom: int, save_path: Path) -> bool:
             return True
         except requests.RequestException as exc:
             wait = 2.0 ** attempt
-            logger.warning("Tile download attempt %d failed: %s -- retrying in %.1fs", attempt, exc, wait)
+            logger.warning(
+                "Tile download attempt %d failed: %s -- retrying in %.1fs",
+                attempt, exc, wait,
+            )
             time.sleep(wait)
     return False
 
@@ -122,10 +129,10 @@ def download_tile(lat: float, lon: float, zoom: int, tile_dir: Path) -> tuple | 
 # ── Annotation ────────────────────────────────────────────────────────────────
 
 
-def annotate_tile(tile_path: Path, result: SolarBuildingResult) -> np.ndarray:
+def annotate_tile(tile_path: Path, result: FootprintQueryResult) -> np.ndarray:
     """
-    Draw coloured roof segment polygons + labels on the satellite tile.
-    Each segment label shows area (m2) and pitch angle.
+    Draw coloured building polygon overlays on the satellite tile.
+    Each polygon label shows the building area in m2.
     """
     img = cv2.imread(str(tile_path))
     if img is None:
@@ -133,12 +140,12 @@ def annotate_tile(tile_path: Path, result: SolarBuildingResult) -> np.ndarray:
 
     overlay = img.copy()
 
-    for i, seg in enumerate(result.segments):
-        if not seg.polygon or len(seg.polygon) < 3:
+    for i, bldg in enumerate(result.buildings):
+        if not bldg.polygon or len(bldg.polygon) < 3:
             continue
 
         colour = _COLOURS[i % len(_COLOURS)]
-        pts = np.array([[p[0], p[1]] for p in seg.polygon], dtype=np.int32)
+        pts = np.array([[p[0], p[1]] for p in bldg.polygon], dtype=np.int32)
         pts = np.clip(pts, 0, DEFAULT_TILE_SIZE - 1)
 
         cv2.fillPoly(overlay, [pts], colour)
@@ -146,14 +153,19 @@ def annotate_tile(tile_path: Path, result: SolarBuildingResult) -> np.ndarray:
 
         cx = int(pts[:, 0].mean())
         cy = int(pts[:, 1].mean())
-        label = f"{seg.area_m2:.0f}m2 {seg.pitch_deg:.0f}deg"
+        label = f"{bldg.area_m2:.0f}m2"
         font = cv2.FONT_HERSHEY_SIMPLEX
         font_scale = 0.4
         thickness = 1
         (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
         tx_label = max(0, cx - tw // 2)
         ty_label = max(th + 4, cy)
-        cv2.rectangle(img, (tx_label - 2, ty_label - th - 2), (tx_label + tw + 2, ty_label + baseline), (0, 0, 0), -1)
+        cv2.rectangle(
+            img,
+            (tx_label - 2, ty_label - th - 2),
+            (tx_label + tw + 2, ty_label + baseline),
+            (0, 0, 0), -1,
+        )
         cv2.putText(img, label, (tx_label, ty_label), font, font_scale, colour, thickness, cv2.LINE_AA)
 
     cv2.addWeighted(overlay, 0.25, img, 0.75, 0, img)
@@ -163,40 +175,33 @@ def annotate_tile(tile_path: Path, result: SolarBuildingResult) -> np.ndarray:
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 
-def print_summary(result: SolarBuildingResult, tag: str) -> str:
+def print_summary(result: FootprintQueryResult, tag: str) -> str:
     """Format and print a summary table. Returns the text."""
-
-    def _azimuth_name(deg: float) -> str:
-        dirs = ["N", "NE", "E", "SE", "S", "SW", "W", "NW", "N"]
-        return dirs[round(deg / 45) % 8]
+    tile_area = DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE * (0.298 ** 2)  # approx m2 at zoom 19
+    coverage_pct = (result.total_area_m2 / tile_area * 100) if tile_area > 0 else 0
 
     lines = [
         "",
-        "=" * 62,
-        f"  Raising Rooves - Solar API Analysis: {tag}",
-        "=" * 62,
-        f"  Building centre  : ({result.lat:.5f}, {result.lon:.5f})",
-        f"  Total roof area  : {result.whole_roof_area_m2:,.0f} m2",
-        f"  Ground area      : {result.whole_roof_ground_area_m2:,.0f} m2",
-        f"  Max sunshine     : {result.max_sunshine_hours_per_year:,.0f} hrs/yr",
-        f"  Roof segments    : {len(result.segments)}",
-        f"  Imagery date     : {result.imagery_date} ({result.imagery_quality})",
-        "-" * 62,
+        "=" * 60,
+        f"  Raising Rooves - Building Footprint Analysis: {tag}",
+        "=" * 60,
+        f"  Source           : OSM Overpass API (OpenStreetMap)",
+        f"  Buildings found  : {result.count}",
+        f"  Total roof area  : {result.total_area_m2:,.0f} m2",
+        f"  Approx tile area : {tile_area:,.0f} m2",
+        f"  Roof coverage    : {coverage_pct:.1f} %",
+        "-" * 60,
     ]
-    if result.segments:
-        lines.append(
-            f"  {'Seg':<5} {'Area(m2)':>9}  {'Pitch':>6}  {'Azimuth':>9}  {'Sunshine hrs/yr':>15}"
-        )
-        lines.append(f"  {'-'*5} {'-'*9}  {'-'*6}  {'-'*9}  {'-'*15}")
-        for seg in sorted(result.segments, key=lambda s: -s.area_m2):
-            az_name = _azimuth_name(seg.azimuth_deg)
+
+    if result.buildings:
+        lines.append(f"  {'#':<5} {'Building ID':<15} {'Area (m2)':>10}  {'Source'}")
+        lines.append(f"  {'-'*5} {'-'*15} {'-'*10}  {'-'*6}")
+        for i, bldg in enumerate(sorted(result.buildings, key=lambda b: -b.area_m2)):
             lines.append(
-                f"  {seg.segment_id:<5} {seg.area_m2:>9,.1f}  "
-                f"{seg.pitch_deg:>5.1f}d  "
-                f"{seg.azimuth_deg:>6.1f} {az_name:<2}  "
-                f"{seg.sunshine_hours_per_year:>15,.0f}"
+                f"  {i+1:<5} {bldg.building_id:<15} {bldg.area_m2:>10,.1f}  {bldg.source}"
             )
-    lines.append("=" * 62)
+
+    lines.append("=" * 60)
     text = "\n".join(lines)
     print(text)
     return text
@@ -207,13 +212,20 @@ def print_summary(result: SolarBuildingResult, tag: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Raising Rooves -- Solar API Coordinate Analysis"
+        description="Raising Rooves -- Building Footprint Coordinate Analysis"
     )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--lat", type=float, help="Latitude (decimal degrees)")
     group.add_argument("--suburb", type=str, help="Suburb name from config")
     parser.add_argument("--lon", type=float, help="Longitude (required with --lat)")
     parser.add_argument("--zoom", type=int, default=DEFAULT_ZOOM)
+    parser.add_argument(
+        "--footprint-file",
+        type=Path,
+        default=None,
+        help="Optional: path to local GeoJSON footprint file (e.g. Microsoft AU Building Footprints). "
+             "If omitted, queries OSM Overpass API.",
+    )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
@@ -238,7 +250,7 @@ def main() -> None:
     tile_dir = ensure_dir(TILES_DIR / "coordinate_analysis")
     out_dir = ensure_dir(OUTPUT_DIR)
 
-    # Step 1: Download satellite tile
+    # Step 1: Download satellite tile (background visual only)
     tile_result = download_tile(lat, lon, args.zoom, tile_dir)
     if tile_result is None:
         logger.error("No tile downloaded. Check GOOGLE_MAPS_API_KEY.")
@@ -246,51 +258,46 @@ def main() -> None:
     tile_path, tile_lat, tile_lon = tile_result
     logger.info("Tile: %s (centre %.5f, %.5f)", tile_path.name, tile_lat, tile_lon)
 
-    # Step 2: Call Solar API
-    logger.info("Calling Solar API for (%.5f, %.5f)...", lat, lon)
+    # Step 2: Query building footprints
+    source_label = f"local file: {args.footprint_file}" if args.footprint_file else "OSM Overpass API"
+    logger.info("Querying building footprints via %s...", source_label)
     try:
-        building = segment_building(
-            lat, lon,
-            tile_centre_lat=tile_lat,
-            tile_centre_lon=tile_lon,
+        footprint_result = query_buildings_in_tile(
+            centre_lat=tile_lat,
+            centre_lon=tile_lon,
             zoom=args.zoom,
+            local_file=args.footprint_file,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, FileNotFoundError) as exc:
         logger.error("%s", exc)
         sys.exit(1)
 
     # Step 3: Print summary
-    summary_text = print_summary(building, tag)
+    summary_text = print_summary(footprint_result, tag)
 
     # Step 4: Save outputs
-    img = annotate_tile(tile_path, building)
+    img = annotate_tile(tile_path, footprint_result)
     img_path = out_dir / f"{tag}_annotated.png"
     cv2.imwrite(str(img_path), img)
     logger.info("Annotated image -> %s", img_path)
 
-    csv_path = out_dir / f"{tag}_roofs.csv"
-    if building.segments:
+    csv_path = out_dir / f"{tag}_buildings.csv"
+    if footprint_result.buildings:
         with open(csv_path, "w", newline="") as f:
-            fieldnames = [
-                "segment_id", "area_m2", "ground_area_m2",
-                "pitch_deg", "azimuth_deg",
-                "centre_lat", "centre_lon",
-                "sunshine_hours_per_year",
-            ]
+            fieldnames = ["building_id", "area_m2", "source", "centroid_lon", "centroid_lat"]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            for seg in building.segments:
+            for bldg in footprint_result.buildings:
+                lons = [c[0] for c in bldg.polygon_latlon]
+                lats = [c[1] for c in bldg.polygon_latlon]
                 writer.writerow({
-                    "segment_id": seg.segment_id,
-                    "area_m2": round(seg.area_m2, 1),
-                    "ground_area_m2": round(seg.ground_area_m2, 1),
-                    "pitch_deg": round(seg.pitch_deg, 1),
-                    "azimuth_deg": round(seg.azimuth_deg, 1),
-                    "centre_lat": round(seg.centre_lat, 6),
-                    "centre_lon": round(seg.centre_lon, 6),
-                    "sunshine_hours_per_year": round(seg.sunshine_hours_per_year, 0),
+                    "building_id": bldg.building_id,
+                    "area_m2": bldg.area_m2,
+                    "source": bldg.source,
+                    "centroid_lon": round(sum(lons) / len(lons), 6),
+                    "centroid_lat": round(sum(lats) / len(lats), 6),
                 })
-        logger.info("Roof CSV -> %s", csv_path)
+        logger.info("Buildings CSV -> %s", csv_path)
 
     summary_path = out_dir / f"{tag}_summary.txt"
     summary_path.write_text(summary_text)
@@ -298,8 +305,8 @@ def main() -> None:
 
     print(f"\nOutputs saved to: {out_dir}")
     print(f"  Annotated image : {img_path.name}")
-    if building.segments:
-        print(f"  Roof data CSV   : {csv_path.name}")
+    if footprint_result.buildings:
+        print(f"  Buildings CSV   : {csv_path.name}")
     print(f"  Summary text    : {summary_path.name}")
 
 

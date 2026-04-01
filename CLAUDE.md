@@ -30,11 +30,12 @@ Monash University Final Year Project (2026). Builds a data pipeline to model coo
 
 ## Run Commands
 ```bash
-# ── MVP: Analyse a single coordinate (Gemini Vision, no GPU needed) ──
+# ── MVP: Analyse a single coordinate (OSM building footprints, no key needed) ──
 python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185
 python -m tools.analyse_coordinate --suburb Clayton
-python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --grid 3  # 3×3 tile grid
 python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --debug
+# With local MS Building Footprints file (optional, ~845MB download):
+python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --footprint-file data/raw/footprints/australia.geojson
 
 # ── Stage 1: Full suburb roof segmentation ──
 python -m stage1_segmentation.run_stage1 --suburb "Richmond"
@@ -50,13 +51,16 @@ python -m pytest tests/
 ```
 
 ## Segmentation Approach
-Stage 1 uses **Gemini Vision API** (gemini-2.0-flash) for roof segmentation — no GPU or Colab needed.
-- Each 640×640 tile is sent to Gemini with a structured JSON prompt
-- Gemini returns roof polygon coordinates + material + colour in one call
-- Polygons are rendered to binary masks via OpenCV and saved to `data/processed/masks/`
-- Run is checkpoint-aware: interrupted runs resume from where they left off
-- Rate: free tier ~15 RPM (2208 tiles ≈ 2.5 hrs); paid tier ~2000 RPM (≈ 1.5 min)
-- `GEMINI_API_KEY` must be set in `.env` (free key at https://aistudio.google.com/app/apikey)
+Stage 1 uses **OpenStreetMap building footprints** via the Overpass API — no GPU, no API key, no large download.
+- `building_footprint_segmenter.py` queries OSM Overpass API for all buildings in a tile bounding box
+- Returns actual polygon vertices (lat/lon), measured area (m²), and OSM building ID per building
+- Polygons projected to tile pixel space via Mercator math; overlaid on satellite imagery
+- Response time: ~15 seconds per tile bbox (Overpass server processing)
+- **Local alternative:** Pass `--footprint-file` pointing at a local Microsoft Australia Building Footprints GeoJSON
+  - Download from: https://github.com/microsoft/AustraliaBuildingFootprints (~845 MB zipped, covers all Melbourne)
+  - Faster repeated queries; same ODbL license
+
+The legacy Gemini Vision segmenter (`gemini_segmenter.py`) is retained for reference.
 
 ## Debugging
 - All CLI entry points accept `--debug` to set logging to DEBUG level
