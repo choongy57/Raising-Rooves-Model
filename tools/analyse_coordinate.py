@@ -132,7 +132,7 @@ def download_grid(
     tiles = []
 
     total = grid * grid
-    logger.info("Downloading %d×%d = %d tile(s) around (%.5f, %.5f)", grid, grid, total, centre_lat, centre_lon)
+    logger.info("Downloading %dx%d = %d tile(s) around (%.5f, %.5f)", grid, grid, total, centre_lat, centre_lon)
 
     for dy in range(-offset, offset + 1):
         for dx in range(-offset, offset + 1):
@@ -262,16 +262,16 @@ def print_summary(stats: dict, tag: str) -> str:
     lines = [
         "",
         "=" * 52,
-        f"  Raising Rooves — Coordinate Analysis: {tag}",
+        f"  Raising Rooves - Coordinate Analysis: {tag}",
         "=" * 52,
         f"  Roofs detected    : {stats['num_roofs']}",
-        f"  Total roof area   : {stats['total_roof_m2']:,.0f} m²",
-        f"  Total tile area   : {stats['total_tile_m2']:,.0f} m²",
+        f"  Total roof area   : {stats['total_roof_m2']:,.0f} m2",
+        f"  Total tile area   : {stats['total_tile_m2']:,.0f} m2",
         f"  Roof coverage     : {stats['coverage_pct']:.1f} %",
         "-" * 52,
     ]
     if stats["roofs"]:
-        lines.append(f"  {'Roof':<10} {'Area (m²)':>9}  {'Material':<10}  {'Colour':<8}  {'Conf':>5}")
+        lines.append(f"  {'Roof':<10} {'Area (m2)':>9}  {'Material':<10}  {'Colour':<8}  {'Conf':>5}")
         lines.append(f"  {'-'*10} {'-'*9}  {'-'*10}  {'-'*8}  {'-'*5}")
         for r in sorted(stats["roofs"], key=lambda x: -x["area_m2"]):
             lines.append(
@@ -366,7 +366,7 @@ def main() -> None:
 
     img_path = out_dir / f"{tag}_annotated.png"
     cv2.imwrite(str(img_path), final_img)
-    logger.info("Annotated image saved → %s", img_path)
+    logger.info("Annotated image saved -> %s", img_path)
 
     #  b) Per-roof CSV
     csv_path = out_dir / f"{tag}_roofs.csv"
@@ -376,12 +376,12 @@ def main() -> None:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             writer.writerows(stats["roofs"])
-        logger.info("Roof CSV saved     → %s", csv_path)
+        logger.info("Roof CSV saved     -> %s", csv_path)
 
     #  c) Summary text
     summary_path = out_dir / f"{tag}_summary.txt"
     summary_path.write_text(summary_text)
-    logger.info("Summary saved      → %s", summary_path)
+    logger.info("Summary saved      -> %s", summary_path)
 
     print(f"\nOutputs saved to:  {out_dir}")
     print(f"  Annotated image:  {img_path.name}")

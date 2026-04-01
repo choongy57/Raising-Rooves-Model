@@ -18,6 +18,7 @@ interrupted runs can be safely resumed.
 
 import io
 import json
+import re
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -37,22 +38,30 @@ logger = setup_logging("gemini_segmenter")
 # ── Constants ────────────────────────────────────────────────────────────────
 
 GEMINI_MODEL = "gemini-2.0-flash"
+# Fallback models tried in order when the primary hits a quota wall.
+# Must be valid names as returned by client.models.list().
+GEMINI_FALLBACK_MODELS = ["gemini-2.0-flash-lite", "gemini-2.5-flash-lite", "gemini-2.5-flash"]
 GEMINI_RPM_FREE = 15                    # requests per minute on free tier
 GEMINI_RPM_DELAY = 60.0 / GEMINI_RPM_FREE  # ~4 s between calls, free tier
-MAX_RETRIES = 5
+MAX_RETRIES = 4
 RETRY_BACKOFF = 2.0
-MIN_SEGMENT_PIXELS = 50                 # discard fragments smaller than this
+DEFAULT_RATE_LIMIT_WAIT = 65.0          # fallback wait (s) when 429 gives no hint
+MIN_SEGMENT_PIXELS = 300                # discard fragments smaller than this (~6x6 m at zoom 19)
 
 # ── Structured prompt ────────────────────────────────────────────────────────
 
 _PROMPT = """
-You are analysing a satellite image of a Melbourne suburb (640×640 px, ~0.3 m/pixel).
+You are analysing a satellite image of a Melbourne suburb (640x640 px, ~0.3 m/pixel).
 
-Identify EVERY visible rooftop. For each roof return:
-  - "polygon": [[x,y], ...] — 6–20 integer pixel vertices (0–639) tracing the roof outline
+Identify the SUBSTANTIAL rooftops (buildings with roofs at least ~5x5 metres, i.e. ~17x17 pixels).
+Ignore tiny shadows, cars, footpaths, or features smaller than a garden shed.
+Return at most 30 rooftops — if there are more, pick the 30 largest.
+
+For each roof return:
+  - "polygon": [[x,y], ...] — 6-12 integer pixel vertices (0-639) tracing the roof outline
   - "material": one of "metal", "tile", "concrete", "unknown"
   - "colour": one of "light", "dark", "red", "grey", "blue", "green", "brown", "unknown"
-  - "confidence": 0.0–1.0
+  - "confidence": 0.0-1.0
 
 Return ONLY a valid JSON array. If no roofs are visible return [].
 """
@@ -84,6 +93,33 @@ class GeminiSegmentationResult:
 
 
 # ── Internal helpers ─────────────────────────────────────────────────────────
+
+
+def _parse_retry_delay(exc: Exception) -> float:
+    """
+    Extract the API-suggested retry delay (seconds) from a 429 exception.
+
+    The Gemini API embeds a retryDelay field like ``'retryDelay': '53s'``
+    in the error details.  Fall back to DEFAULT_RATE_LIMIT_WAIT if not found.
+    """
+    match = re.search(r"retryDelay.*?(\d+)s", str(exc))
+    return float(match.group(1)) + 5 if match else DEFAULT_RATE_LIMIT_WAIT
+
+
+def _is_quota_error(exc: Exception) -> bool:
+    """Return True if the exception is a rate-limit / quota exhaustion error."""
+    s = str(exc)
+    return "429" in s or "RESOURCE_EXHAUSTED" in s
+
+
+def _is_auth_error(exc: Exception) -> bool:
+    """Return True for unrecoverable 400-level auth errors (expired/invalid key).
+
+    Deliberately excludes 429 quota errors — those are retryable.
+    """
+    s = str(exc)
+    is_400 = "400 " in s or "'code': 400" in s
+    return is_400 and ("API_KEY_INVALID" in s or "API key expired" in s)
 
 
 def _get_client() -> genai.Client:
@@ -130,9 +166,12 @@ def _polygons_to_mask(
 
 def _parse_response(raw: str) -> list[dict]:
     """
-    Parse Gemini's JSON response, tolerating minor formatting issues.
+    Parse Gemini's JSON response, tolerating truncation and code fences.
 
-    Returns a list of roof dicts, or [] on failure.
+    If the full JSON fails to parse (e.g. response was cut off mid-array),
+    salvages all complete objects found before the truncation point.
+
+    Returns a list of roof dicts, or [] on unrecoverable failure.
     """
     text = raw.strip()
     # Strip markdown code fences if present
@@ -140,12 +179,29 @@ def _parse_response(raw: str) -> list[dict]:
         lines = text.splitlines()
         end = -1 if lines[-1].strip() == "```" else len(lines)
         text = "\n".join(lines[1:end])
+
     try:
         data = json.loads(text)
         return data if isinstance(data, list) else []
-    except json.JSONDecodeError as exc:
-        logger.warning("JSON parse failed: %s | raw: %.300s", exc, raw)
-        return []
+    except json.JSONDecodeError:
+        pass  # fall through to recovery
+
+    # Salvage partial response: find the last complete JSON object in the array
+    last_obj_end = text.rfind("},")
+    if last_obj_end > 0:
+        partial = text[:last_obj_end + 1] + "]"
+        try:
+            data = json.loads(partial)
+            if isinstance(data, list) and data:
+                logger.warning(
+                    "Response truncated -- salvaged %d roofs from partial JSON", len(data)
+                )
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning("JSON parse failed entirely | raw: %.300s", raw)
+    return []
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -156,10 +212,15 @@ def segment_tile(
     client: genai.Client,
 ) -> GeminiSegmentationResult:
     """
-    Segment a single 640×640 satellite tile with Gemini.
+    Segment a single 640x640 satellite tile with Gemini.
 
     Sends the image to the Gemini Vision API and converts the returned
     roof polygons into a binary mask plus per-segment metadata.
+
+    Retries up to MAX_RETRIES times.  On 429 / RESOURCE_EXHAUSTED errors the
+    wait time is taken from the API-suggested retryDelay (typically 50-65 s)
+    rather than a short exponential backoff.  If the primary model is
+    quota-exhausted after all retries, falls back through GEMINI_FALLBACK_MODELS.
 
     Args:
         tile_path: Path to the tile PNG.
@@ -172,35 +233,69 @@ def segment_tile(
     h, w = image.height, image.width
     image_part = _image_to_part(image)
 
-    raw = ""
-    for attempt in range(1, MAX_RETRIES + 1):
-        try:
-            response = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=[image_part, types.Part.from_text(text=_PROMPT)],
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.1,
-                ),
-            )
-            raw = response.text
-            break
-        except Exception as exc:  # noqa: BLE001 — covers rate limits + transient errors
-            wait = RETRY_BACKOFF ** attempt
-            if attempt == MAX_RETRIES:
-                logger.error(
-                    "Gemini failed after %d attempts for %s: %s",
-                    MAX_RETRIES, tile_path.name, exc,
+    models_to_try = [GEMINI_MODEL] + GEMINI_FALLBACK_MODELS
+
+    for model_name in models_to_try:
+        raw = ""
+        for attempt in range(1, MAX_RETRIES + 1):
+            try:
+                response = client.models.generate_content(
+                    model=model_name,
+                    contents=[image_part, types.Part.from_text(text=_PROMPT)],
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        temperature=0.1,
+                    ),
                 )
-                return GeminiSegmentationResult(
-                    tile_path=tile_path,
-                    mask=np.zeros((h, w), dtype=bool),
-                )
-            logger.warning(
-                "Attempt %d/%d for %s failed: %s — retrying in %.1fs",
-                attempt, MAX_RETRIES, tile_path.name, exc, wait,
-            )
-            time.sleep(wait)
+                raw = response.text
+                if model_name != GEMINI_MODEL:
+                    logger.info("Used fallback model %s for %s", model_name, tile_path.name)
+                break  # success
+            except Exception as exc:  # noqa: BLE001
+                if _is_auth_error(exc):
+                    # No point retrying — key is invalid/expired across all models
+                    raise RuntimeError(
+                        f"Gemini API key is invalid or expired: {exc}\n"
+                        "Get a new key at https://aistudio.google.com/app/apikey "
+                        "and update GEMINI_API_KEY in your .env file."
+                    ) from exc
+                if _is_quota_error(exc):
+                    wait = _parse_retry_delay(exc)
+                    if attempt == MAX_RETRIES:
+                        logger.warning(
+                            "Quota exhausted on %s after %d attempts -- trying next model",
+                            model_name, MAX_RETRIES,
+                        )
+                        break  # try next model
+                    logger.warning(
+                        "[%s] attempt %d/%d rate-limited for %s -- waiting %.0fs",
+                        model_name, attempt, MAX_RETRIES, tile_path.name, wait,
+                    )
+                else:
+                    wait = RETRY_BACKOFF ** attempt
+                    if attempt == MAX_RETRIES:
+                        logger.error(
+                            "Gemini error after %d attempts for %s: %s",
+                            MAX_RETRIES, tile_path.name, exc,
+                        )
+                        return GeminiSegmentationResult(
+                            tile_path=tile_path,
+                            mask=np.zeros((h, w), dtype=bool),
+                        )
+                    logger.warning(
+                        "[%s] attempt %d/%d failed for %s: %s -- retrying in %.1fs",
+                        model_name, attempt, MAX_RETRIES, tile_path.name, exc, wait,
+                    )
+                time.sleep(wait)
+
+        if raw:
+            break  # got a response, skip remaining fallback models
+    else:
+        logger.error("All Gemini models exhausted for %s", tile_path.name)
+        return GeminiSegmentationResult(
+            tile_path=tile_path,
+            mask=np.zeros((h, w), dtype=bool),
+        )
 
     roof_dicts = _parse_response(raw)
     polygons_for_mask: list[list[list[int]]] = []
@@ -239,7 +334,7 @@ def segment_tile(
 
     combined_mask = _polygons_to_mask(polygons_for_mask, size=DEFAULT_TILE_SIZE)
     logger.debug(
-        "%s → %d roofs | %d roof pixels",
+        "%s -> %d roofs | %d roof pixels",
         tile_path.name, len(segments), int(combined_mask.sum()),
     )
     return GeminiSegmentationResult(
