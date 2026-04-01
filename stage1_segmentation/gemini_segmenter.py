@@ -38,10 +38,10 @@ logger = setup_logging("gemini_segmenter")
 
 # ── Constants ────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = "models/gemini-2.5-flash"
 # Fallback models tried in order when the primary hits a quota wall or 404.
 # Must be valid names as returned by client.models.list().
-GEMINI_FALLBACK_MODELS = ["gemini-2.0-flash", "gemini-2.0-flash-lite"]
+GEMINI_FALLBACK_MODELS = []
 GEMINI_RPM_FREE = 15                    # requests per minute on free tier
 GEMINI_RPM_DELAY = 60.0 / GEMINI_RPM_FREE  # ~4 s between calls, free tier
 MAX_RETRIES = 4
@@ -74,12 +74,13 @@ WHAT TO DETECT:
 WHAT TO EXCLUDE: roads, car parks, footpaths, bare ground, trees, shadows, cars.
 
 FOR EACH VISIBLE ROOF return one JSON object:
-  "polygon": [[x,y], ...] — 4 to 12 integer pixel vertices (0-639), tracing the roof edge
+  "polygon": [[x,y], ...] — EXACTLY 4 to 6 integer pixel vertices (0-639). Use a simple
+             rectangular or trapezoidal outline. DO NOT use staircase traces.
   "material": "metal" | "tile" | "concrete" | "unknown"
   "colour": "light" | "dark" | "red" | "grey" | "blue" | "green" | "brown" | "unknown"
   "confidence": float 0.0-1.0 (your certainty this is a real roof)
 
-Return ONLY a valid JSON array. No explanation. If no roofs are visible, return [].
+Return ONLY a valid JSON array (no markdown, no explanation). If no roofs visible, return [].
 """
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
@@ -180,7 +181,10 @@ def _polygons_to_mask(
     for poly in polygons:
         if len(poly) < 3:
             continue
-        pts = np.array([[p[0], p[1]] for p in poly], dtype=np.int32)
+        try:
+            pts = np.array([[p[0], p[1]] for p in poly], dtype=np.int32)
+        except (TypeError, IndexError):
+            continue  # skip malformed vertices
         pts = np.clip(pts, 0, size - 1)
         cv2.fillPoly(canvas, [pts], 255)
     return canvas > 127
@@ -266,6 +270,8 @@ def segment_tile(
                     contents=[image_part, types.Part.from_text(text=_PROMPT)],
                     config=types.GenerateContentConfig(
                         temperature=0.1,
+                        max_output_tokens=3000,
+                        thinking_config=types.ThinkingConfig(thinking_budget=0),
                     ),
                 )
                 raw = response.text
