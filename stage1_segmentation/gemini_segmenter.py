@@ -51,34 +51,35 @@ MIN_SEGMENT_PIXELS = 300                # discard fragments smaller than this (~
 # ── Structured prompt ────────────────────────────────────────────────────────
 
 _PROMPT = """
-You are a building analyst examining a top-down satellite image of Melbourne, Australia.
-Resolution: ~0.3 m/pixel, image size: 640x640 pixels.
+You are an expert building analyst examining a top-down satellite image of Melbourne, Australia.
+Resolution: ~0.3 m/pixel. Image size: 640x640 pixels (covers ~190x190 metres).
 
-TASK: Find every visible building rooftop and trace its outline precisely.
+TASK: Detect and outline EVERY building rooftop visible in the image — large or small,
+at ANY rotation or orientation. Buildings can appear at any angle.
 
-WHAT COUNTS AS A ROOF:
-- Flat commercial/industrial roofs: large grey, white, or silver rectangular surfaces,
-  often with HVAC units, solar panels, skylights, or vents on top
-- Residential roofs: smaller peaked/hip roofs, typically terracotta (red/brown),
-  concrete tile (grey), or metal (silver/dark grey)
-- Warehouse roofs: corrugated metal, often long rectangular shapes
+CRITICAL RULES — READ CAREFULLY:
+1. LARGE FLAT WHITE/LIGHT ROOFS: A large uniform white, cream, or light-grey rectangular
+   area surrounded by roads, car parks, or other buildings IS a rooftop (commercial/retail).
+   Do NOT skip these because they look "empty" or featureless. They are the most important.
+2. EVERY distinct building gets its own polygon — do not merge adjacent structures.
+3. Trace the actual visible roof edge, not a rough bounding box.
+4. Roofs appear at any rotation — trace them accurately regardless of angle.
+5. Do NOT include: roads, car parks, footpaths, open ground, trees, cars, or shadows.
 
-DO NOT include: roads, car parks, footpaths, gardens, trees, cars, or bare ground.
-Each distinct building section is a SEPARATE polygon — do not merge adjacent buildings.
+ROOF TYPES TO DETECT:
+- Large flat commercial/retail: white, cream, light-grey rectangle, often with HVAC units,
+  solar panels, skylights, or service equipment on top
+- Industrial/warehouse: corrugated metal (silver, dark, or brown), long rectangles
+- Residential: terracotta (red/brown), concrete tile (grey), or metal (silver/dark grey),
+  typically smaller and often angled/hipped
 
-HOW TO TRACE ACCURATELY:
-- Follow the visible outer edge of the roof surface tightly
-- Use 4 vertices for a simple rectangle, up to 12 for L-shaped or complex roofs
-- The polygon must NOT spill into adjacent roads or car parks
-- If a large roof complex has multiple distinct sections, return each as its own polygon
-
-FOR EACH ROOF RETURN (as a JSON object):
-  "polygon": [[x,y], [x,y], ...] — integer pixel coords, range 0-639
+FOR EACH ROOF return a JSON object with:
+  "polygon": [[x,y], ...] — 4 to 12 integer pixel vertices (0-639), tight to roof edge
   "material": "metal" | "tile" | "concrete" | "unknown"
   "colour": "light" | "dark" | "red" | "grey" | "blue" | "green" | "brown" | "unknown"
   "confidence": float 0.0-1.0
 
-Return ONLY a valid JSON array of these objects. No explanation. If no roofs, return [].
+Return ONLY a valid JSON array. No explanation text. If no roofs visible, return [].
 """
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
