@@ -57,7 +57,7 @@ from shared.logging_config import setup_logging
 from shared.validation import validate_env_vars
 from stage1_segmentation.gemini_segmenter import (
     GeminiSegmentationResult,
-    _get_model,
+    _get_client,
     segment_tile,
 )
 
@@ -330,7 +330,7 @@ def main() -> None:
         sys.exit(1)
 
     # Step 2: Segment with Gemini
-    model = _get_model()
+    model = _get_client()
     all_results: list[tuple[GeminiSegmentationResult, float, int]] = []
     annotated_frames = []
     rate_delay = 60.0 / 15  # free-tier safe default (~4s)

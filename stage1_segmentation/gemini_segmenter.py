@@ -16,6 +16,7 @@ The run is checkpoint-aware: already-processed tiles are skipped, so
 interrupted runs can be safely resumed.
 """
 
+import io
 import json
 import time
 from pathlib import Path
@@ -24,8 +25,8 @@ from dataclasses import dataclass, field
 import cv2
 import numpy as np
 from PIL import Image
-
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 from config.settings import GEMINI_API_KEY, MASKS_DIR, DEFAULT_TILE_SIZE
 from shared.file_io import ensure_dir
@@ -85,22 +86,22 @@ class GeminiSegmentationResult:
 # ── Internal helpers ─────────────────────────────────────────────────────────
 
 
-def _get_model() -> genai.GenerativeModel:
-    """Configure Gemini client and return a GenerativeModel instance."""
+def _get_client() -> genai.Client:
+    """Create and return a configured Gemini API client."""
     if not GEMINI_API_KEY:
         raise ValueError(
             "GEMINI_API_KEY is not set.\n"
             "1. Get a free key at https://aistudio.google.com/app/apikey\n"
             "2. Add  GEMINI_API_KEY=your_key  to your .env file"
         )
-    genai.configure(api_key=GEMINI_API_KEY)
-    return genai.GenerativeModel(
-        model_name=GEMINI_MODEL,
-        generation_config=genai.GenerationConfig(
-            response_mime_type="application/json",
-            temperature=0.1,   # low temp → consistent structured output
-        ),
-    )
+    return genai.Client(api_key=GEMINI_API_KEY)
+
+
+def _image_to_part(image: Image.Image) -> types.Part:
+    """Convert a PIL Image to a Gemini API Part (JPEG bytes)."""
+    buf = io.BytesIO()
+    image.save(buf, format="JPEG", quality=90)
+    return types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg")
 
 
 def _polygons_to_mask(
@@ -152,7 +153,7 @@ def _parse_response(raw: str) -> list[dict]:
 
 def segment_tile(
     tile_path: Path,
-    model: genai.GenerativeModel,
+    client: genai.Client,
 ) -> GeminiSegmentationResult:
     """
     Segment a single 640×640 satellite tile with Gemini.
@@ -162,21 +163,29 @@ def segment_tile(
 
     Args:
         tile_path: Path to the tile PNG.
-        model: Configured GenerativeModel (from _get_model()).
+        client: Configured Gemini Client (from _get_client()).
 
     Returns:
         GeminiSegmentationResult with mask and segment list.
     """
     image = Image.open(tile_path).convert("RGB")
     h, w = image.height, image.width
+    image_part = _image_to_part(image)
 
     raw = ""
     for attempt in range(1, MAX_RETRIES + 1):
         try:
-            response = model.generate_content([_PROMPT, image])
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=[image_part, types.Part.from_text(text=_PROMPT)],
+                config=types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.1,
+                ),
+            )
             raw = response.text
             break
-        except Exception as exc:  # noqa: BLE001 — covers ResourceExhausted + transient errors
+        except Exception as exc:  # noqa: BLE001 — covers rate limits + transient errors
             wait = RETRY_BACKOFF ** attempt
             if attempt == MAX_RETRIES:
                 logger.error(
@@ -305,7 +314,7 @@ def segment_suburb(
         List of GeminiSegmentationResult for newly processed tiles only
         (skipped tiles are not re-loaded).
     """
-    model = _get_model()
+    client = _get_client()
     mask_dir = ensure_dir(MASKS_DIR / suburb_key)
     results: list[GeminiSegmentationResult] = []
     skipped = failed = processed = 0
@@ -320,7 +329,7 @@ def segment_suburb(
             continue
 
         logger.info("[%d/%d] %s", idx + 1, len(tile_paths), tile_path.name)
-        result = segment_tile(tile_path, model)
+        result = segment_tile(tile_path, client)
 
         if result.mask.sum() == 0:
             failed += 1

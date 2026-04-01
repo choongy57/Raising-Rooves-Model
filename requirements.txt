@@ -10,7 +10,7 @@ Pillow>=10.0
 opencv-python>=4.8
 
 # Gemini Vision API (roof segmentation — replaces SAM3/Colab)
-google-generativeai>=0.8
+google-genai>=1.0
 
 # Climate data
 xarray>=2024.1
