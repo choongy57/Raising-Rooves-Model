@@ -20,6 +20,7 @@ import io
 import json
 import re
 import time
+from collections import Counter
 from pathlib import Path
 from dataclasses import dataclass, field
 
@@ -54,32 +55,31 @@ _PROMPT = """
 You are an expert building analyst examining a top-down satellite image of Melbourne, Australia.
 Resolution: ~0.3 m/pixel. Image size: 640x640 pixels (covers ~190x190 metres).
 
-TASK: Detect and outline EVERY building rooftop visible in the image — large or small,
-at ANY rotation or orientation. Buildings can appear at any angle.
+TASK: Detect and outline every building rooftop you can actually SEE in the image.
 
-CRITICAL RULES — READ CAREFULLY:
-1. LARGE FLAT WHITE/LIGHT ROOFS: A large uniform white, cream, or light-grey rectangular
-   area surrounded by roads, car parks, or other buildings IS a rooftop (commercial/retail).
-   Do NOT skip these because they look "empty" or featureless. They are the most important.
-2. EVERY distinct building gets its own polygon — do not merge adjacent structures.
-3. Trace the actual visible roof edge, not a rough bounding box.
-4. Roofs appear at any rotation — trace them accurately regardless of angle.
-5. Do NOT include: roads, car parks, footpaths, open ground, trees, cars, or shadows.
+ANTI-HALLUCINATION RULES (MOST IMPORTANT):
+- Only trace rooftops that are VISUALLY PRESENT — distinct shapes with visible edges.
+- NEVER output identical or near-identical polygons. Every polygon must be a different building.
+- NEVER fill the image with a regular grid of same-sized boxes. This is wrong.
+- If you are uncertain whether something is a roof, omit it. Precision > recall.
+- Do NOT output more polygons than there are clearly visible buildings.
 
-ROOF TYPES TO DETECT:
-- Large flat commercial/retail: white, cream, light-grey rectangle, often with HVAC units,
-  solar panels, skylights, or service equipment on top
-- Industrial/warehouse: corrugated metal (silver, dark, or brown), long rectangles
-- Residential: terracotta (red/brown), concrete tile (grey), or metal (silver/dark grey),
-  typically smaller and often angled/hipped
+WHAT TO DETECT:
+1. LARGE FLAT COMMERCIAL ROOFS: uniform white/cream/grey rectangles — often the most
+   prominent feature. Include these even if they look featureless.
+2. RESIDENTIAL ROOFS: terracotta (red/brown), concrete tile (grey), or metal — typically
+   smaller, may be angled, can appear at any rotation.
+3. INDUSTRIAL/WAREHOUSE: corrugated metal, long narrow rectangles.
 
-FOR EACH ROOF return a JSON object with:
-  "polygon": [[x,y], ...] — 4 to 12 integer pixel vertices (0-639), tight to roof edge
+WHAT TO EXCLUDE: roads, car parks, footpaths, bare ground, trees, shadows, cars.
+
+FOR EACH VISIBLE ROOF return one JSON object:
+  "polygon": [[x,y], ...] — 4 to 12 integer pixel vertices (0-639), tracing the roof edge
   "material": "metal" | "tile" | "concrete" | "unknown"
   "colour": "light" | "dark" | "red" | "grey" | "blue" | "green" | "brown" | "unknown"
-  "confidence": float 0.0-1.0
+  "confidence": float 0.0-1.0 (your certainty this is a real roof)
 
-Return ONLY a valid JSON array. No explanation text. If no roofs visible, return [].
+Return ONLY a valid JSON array. No explanation. If no roofs are visible, return [].
 """
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
@@ -265,7 +265,6 @@ def segment_tile(
                     model=model_name,
                     contents=[image_part, types.Part.from_text(text=_PROMPT)],
                     config=types.GenerateContentConfig(
-                        response_mime_type="application/json",
                         temperature=0.1,
                     ),
                 )
@@ -327,38 +326,56 @@ def segment_tile(
 
     roof_dicts = _parse_response(raw)
 
-    # Sanity check: if >10 roofs and all have nearly identical areas, the model
-    # hallucinated a regular grid rather than detecting real roofs — discard.
-    if len(roof_dicts) > 10:
-        confidences = [r.get("confidence", 0) for r in roof_dicts]
-        if max(confidences) - min(confidences) < 0.01:
-            logger.warning(
-                "%s: model returned %d roofs with identical confidence (%.2f) -- "
-                "likely a grid hallucination, discarding",
-                tile_path.name, len(roof_dicts), confidences[0],
-            )
-            roof_dicts = []
-
-    polygons_for_mask: list[list[list[int]]] = []
-    segments: list[GeminiRoofSegment] = []
+    # ── Pass 1: compute pixel counts, apply size filters ─────────────────────
+    tile_pixels = DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE
+    candidates: list[tuple[int, dict, list, int]] = []  # (original_idx, roof, poly, px)
 
     for i, roof in enumerate(roof_dicts):
         poly = roof.get("polygon", [])
         if not poly or len(poly) < 3:
             continue
-
-        # Pixel count from filled polygon
         single_mask = _polygons_to_mask([poly], size=DEFAULT_TILE_SIZE)
         pixel_count = int(single_mask.sum())
-        tile_pixels = DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE
         if pixel_count < MIN_SEGMENT_PIXELS:
             continue
-        # Discard implausibly large polygons (>35% of tile = almost certainly
-        # Gemini merging multiple buildings or including car parks / roads)
         if pixel_count > tile_pixels * 0.35:
-            logger.debug("Discarding oversized polygon: %d px (%.0f%% of tile)", pixel_count, pixel_count / tile_pixels * 100)
+            logger.debug(
+                "Discarding oversized polygon: %d px (%.0f%% of tile)",
+                pixel_count, pixel_count / tile_pixels * 100,
+            )
             continue
+        candidates.append((i, roof, poly, pixel_count))
 
+    # ── Pass 2: hallucination filters ────────────────────────────────────────
+    if candidates:
+        # Filter A: identical pixel-count clusters (> 3 occurrences) — the
+        # model fills a regular grid of same-sized boxes.
+        px_counts = Counter(px for _, _, _, px in candidates)
+        bad_px = {px for px, n in px_counts.items() if n > 2}
+        if bad_px:
+            n_before = len(candidates)
+            candidates = [(i, r, p, px) for i, r, p, px in candidates if px not in bad_px]
+            logger.warning(
+                "%s: dropped %d hallucinated identical-size polygons "
+                "(repeated pixel counts: %s)",
+                tile_path.name, n_before - len(candidates), sorted(bad_px),
+            )
+
+        # Filter B: all remaining roofs have uniform confidence — still a grid.
+        if len(candidates) > 10:
+            confs = [r.get("confidence", 0) for _, r, _, _ in candidates]
+            if max(confs) - min(confs) < 0.01:
+                logger.warning(
+                    "%s: %d roofs with identical confidence (%.2f) -- discarding",
+                    tile_path.name, len(candidates), confs[0],
+                )
+                candidates = []
+
+    # ── Build segment objects ─────────────────────────────────────────────────
+    polygons_for_mask: list[list[list[int]]] = []
+    segments: list[GeminiRoofSegment] = []
+
+    for i, roof, poly, pixel_count in candidates:
         polygons_for_mask.append(poly)
 
         pts = np.array(poly)

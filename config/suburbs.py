@@ -66,6 +66,13 @@ SUBURBS = {
         bbox=(-37.7200, 144.8550, -37.6800, 144.9050),
         zone_type="industrial",
     ),
+    "clayton": Suburb(
+        name="Clayton",
+        sa2_code="206061166",
+        centroid=(-37.9150, 145.1220),
+        bbox=(-37.9270, 145.1060, -37.9030, 145.1380),
+        zone_type="mixed",  # Monash University + residential
+    ),
 }
 
 
