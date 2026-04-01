@@ -126,19 +126,27 @@ def download_grid(
     """
     Download a grid x grid set of tiles centred on (centre_lat, centre_lon).
 
+    Each 640px Google Maps image covers 640/256 = 2.5 standard map tile widths,
+    so stepping by 1 tile unit causes 60% geographic overlap between adjacent
+    images. We step by TILE_STEP=2 tile units so adjacent images share only a
+    small ~38m overlap and the stitched result covers a genuinely larger area.
+
     Returns list of (path, tile_lat, tile_lon, col_offset, row_offset) tuples,
-    where col_offset/row_offset are the tile's position in the grid
-    (0-indexed from top-left).
+    where col_offset/row_offset are the tile's 0-indexed position in the canvas
+    (top-left = 0,0).
     """
     ensure_dir(tile_dir)
     cx, cy = latlon_to_tile(centre_lat, centre_lon, zoom)
     half = grid // 2
+    # Step 2 tile units between adjacent images: each 640px image is 2.5 tile
+    # widths across, so step=2 gives a small overlap (~38m) with no black gaps.
+    TILE_STEP = 2
 
     results = []
     for row in range(grid):
         for col in range(grid):
-            tx = cx - half + col
-            ty = cy - half + row
+            tx = cx + (col - half) * TILE_STEP
+            ty = cy + (row - half) * TILE_STEP
             tlat, tlon = tile_centre_latlon(tx, ty, zoom)
             fname = f"coord_{zoom}_{tx}_{ty}.png"
             fpath = tile_dir / fname
@@ -188,6 +196,22 @@ def stitch_tiles(
 # ── Grid-aware lat/lon -> pixel projection ────────────────────────────────────
 
 
+_TILE_STEP = 2  # tile units between adjacent downloaded images (see download_grid)
+
+
+def _metres_per_canvas_px(centre_lat: float, zoom: int, tile_size: int = DEFAULT_TILE_SIZE) -> float:
+    """
+    Return the real-world scale of one canvas pixel in metres.
+
+    Adjacent tile centres are _TILE_STEP * 256 Web-Mercator pixels apart
+    geographically, but placed tile_size canvas pixels apart in the stitch.
+    Scale = (step * 256 WM px * metres_per_WM_px) / tile_size canvas px.
+    """
+    C = 40075016.686
+    metres_per_wm_px = C * math.cos(math.radians(centre_lat)) / (2 ** (zoom + 8))
+    return metres_per_wm_px * (_TILE_STEP * 256) / tile_size
+
+
 def _latlon_to_grid_pixel(
     lat: float,
     lon: float,
@@ -200,11 +224,10 @@ def _latlon_to_grid_pixel(
     """
     Convert lat/lon to pixel coordinates on the stitched grid image.
 
-    The grid image is (grid * tile_size) × (grid * tile_size) pixels,
-    centred on (grid_centre_lat, grid_centre_lon).
+    Uses the canvas scale (_metres_per_canvas_px) which accounts for the
+    TILE_STEP=2 spacing between downloaded tile images.
     """
-    C = 40075016.686
-    metres_per_px = C * math.cos(math.radians(grid_centre_lat)) / (2 ** (zoom + 8))
+    mpp = _metres_per_canvas_px(grid_centre_lat, zoom, tile_size)
 
     dlat_m = (lat - grid_centre_lat) * (math.pi / 180) * 6371000
     dlon_m = (lon - grid_centre_lon) * (math.pi / 180) * 6371000 * math.cos(math.radians(grid_centre_lat))
@@ -212,8 +235,8 @@ def _latlon_to_grid_pixel(
     canvas_size = grid * tile_size
     cx, cy = canvas_size // 2, canvas_size // 2
 
-    px = cx + int(dlon_m / metres_per_px)
-    py = cy - int(dlat_m / metres_per_px)
+    px = cx + int(dlon_m / mpp)
+    py = cy - int(dlat_m / mpp)
 
     return max(0, min(canvas_size - 1, px)), max(0, min(canvas_size - 1, py))
 
@@ -277,14 +300,13 @@ def annotate_image(
 
 def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
     """Format and print a summary table. Returns the text."""
-    C = 40075016.686
-    metres_per_px = C * math.cos(math.radians(result.query_lat)) / (2 ** (DEFAULT_ZOOM + 8))
+    mpp = _metres_per_canvas_px(result.query_lat, DEFAULT_ZOOM)
     px_per_side = DEFAULT_TILE_SIZE * grid
-    tile_area = (px_per_side * metres_per_px) ** 2
+    tile_area = (px_per_side * mpp) ** 2
     coverage_pct = (result.total_area_m2 / tile_area * 100) if tile_area > 0 else 0
 
     area_label = f"{grid}x{grid} tile grid" if grid > 1 else "single tile"
-    side_m = int(px_per_side * metres_per_px)
+    side_m = int(px_per_side * mpp)
 
     lines = [
         "",
@@ -385,18 +407,20 @@ def main() -> None:
     cx, cy = latlon_to_tile(lat, lon, args.zoom)
     grid_centre_lat, grid_centre_lon = tile_centre_latlon(cx, cy, args.zoom)
 
-    # Compute combined bbox from all tile corners
-    all_lats = [tlat for _, tlat, _, _, _ in tile_results]
-    all_lons = [tlon for _, _, tlon, _, _ in tile_results]
-    C = 40075016.686
-    metres_per_px = C * math.cos(math.radians(grid_centre_lat)) / (2 ** (args.zoom + 8))
-    half_tile_deg_lat = (DEFAULT_TILE_SIZE / 2 * metres_per_px) / 111320.0
-    half_tile_deg_lon = (DEFAULT_TILE_SIZE / 2 * metres_per_px) / (111320.0 * math.cos(math.radians(grid_centre_lat)))
+    # Compute bbox to match the full canvas extent.
+    # Canvas is (grid * tile_size) px; each canvas pixel = _metres_per_canvas_px metres.
+    # The OSM query must cover everything the canvas can show.
+    mpp = _metres_per_canvas_px(grid_centre_lat, args.zoom)
+    canvas_half_px = (args.grid * DEFAULT_TILE_SIZE) / 2
+    metres_half = canvas_half_px * mpp * 1.05  # 5% padding so edge buildings aren't clipped
 
-    south = min(all_lats) - half_tile_deg_lat
-    north = max(all_lats) + half_tile_deg_lat
-    west  = min(all_lons) - half_tile_deg_lon
-    east  = max(all_lons) + half_tile_deg_lon
+    dlat = metres_half / 111320.0
+    dlon = metres_half / (111320.0 * math.cos(math.radians(grid_centre_lat)))
+
+    south = grid_centre_lat - dlat
+    north = grid_centre_lat + dlat
+    west  = grid_centre_lon - dlon
+    east  = grid_centre_lon + dlon
 
     # Step 2: Query building footprints for the full grid bbox
     source_label = f"local file: {args.footprint_file}" if args.footprint_file else "OSM Overpass API"
