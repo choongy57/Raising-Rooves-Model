@@ -2,7 +2,7 @@
 MVP Coordinate Analysis Tool - Raising Rooves
 
 Given a lat/lon coordinate, queries building footprint polygons for the
-surrounding tile area, downloads the satellite tile, and saves an annotated
+surrounding area, downloads the satellite tile(s), and saves an annotated
 image showing each building outline with its area label.
 
 Data source: OpenStreetMap Overpass API (no key, no download required).
@@ -11,8 +11,14 @@ Local alternative: Microsoft Australia Building Footprints GeoJSON file
 then pass --footprint-file path/to/file.geojson).
 
 Usage:
-    # By coordinate:
+    # Single tile (~190x190m):
     python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185
+
+    # 3x3 tile grid (~570x570m):
+    python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --grid 3
+
+    # 5x5 tile grid (~950x950m):
+    python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --grid 5
 
     # By suburb name (uses centroid from config):
     python -m tools.analyse_coordinate --suburb Clayton
@@ -24,13 +30,14 @@ Usage:
     python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --debug
 
 Outputs (saved to data/output/):
-    - <tag>_annotated.png   : satellite tile with coloured building polygon overlays
+    - <tag>_annotated.png   : satellite image(s) with coloured building polygon overlays
     - <tag>_buildings.csv   : per-building area, centroid lat/lon, source
     - <tag>_summary.txt     : totals printed to console and saved to file
 """
 
 import argparse
 import csv
+import math
 import sys
 import time
 from pathlib import Path
@@ -59,7 +66,7 @@ from shared.logging_config import setup_logging
 from shared.validation import validate_env_vars
 from stage1_segmentation.building_footprint_segmenter import (
     FootprintQueryResult,
-    query_buildings_in_tile,
+    query_buildings_in_bbox,
 )
 
 logger = setup_logging("analyse_coordinate")
@@ -109,44 +116,137 @@ def _download_tile(lat: float, lon: float, zoom: int, save_path: Path) -> bool:
     return False
 
 
-def download_tile(lat: float, lon: float, zoom: int, tile_dir: Path) -> tuple | None:
-    """Download a single tile. Returns (path, tile_lat, tile_lon) or None on failure."""
+def download_grid(
+    centre_lat: float,
+    centre_lon: float,
+    zoom: int,
+    grid: int,
+    tile_dir: Path,
+) -> list[tuple[Path, float, float, int, int]]:
+    """
+    Download a grid x grid set of tiles centred on (centre_lat, centre_lon).
+
+    Returns list of (path, tile_lat, tile_lon, col_offset, row_offset) tuples,
+    where col_offset/row_offset are the tile's position in the grid
+    (0-indexed from top-left).
+    """
     ensure_dir(tile_dir)
-    tx, ty = latlon_to_tile(lat, lon, zoom)
-    tlat, tlon = tile_centre_latlon(tx, ty, zoom)
-    fname = f"coord_{zoom}_{tx}_{ty}.png"
-    fpath = tile_dir / fname
-    if fpath.exists() and fpath.stat().st_size > 0:
-        logger.debug("Tile cached: %s", fname)
-    else:
-        ok = _download_tile(tlat, tlon, zoom, fpath)
-        if not ok:
-            logger.error("Failed to download tile for (%.5f, %.5f)", lat, lon)
-            return None
-    return fpath, tlat, tlon
+    cx, cy = latlon_to_tile(centre_lat, centre_lon, zoom)
+    half = grid // 2
+
+    results = []
+    for row in range(grid):
+        for col in range(grid):
+            tx = cx - half + col
+            ty = cy - half + row
+            tlat, tlon = tile_centre_latlon(tx, ty, zoom)
+            fname = f"coord_{zoom}_{tx}_{ty}.png"
+            fpath = tile_dir / fname
+
+            if fpath.exists() and fpath.stat().st_size > 0:
+                logger.debug("Tile cached: %s", fname)
+            else:
+                ok = _download_tile(tlat, tlon, zoom, fpath)
+                if not ok:
+                    logger.error("Failed to download tile (%d, %d)", tx, ty)
+                    continue
+
+            results.append((fpath, tlat, tlon, col, row))
+
+    logger.info("Downloaded / cached %d tiles (%dx%d grid)", len(results), grid, grid)
+    return results
+
+
+# ── Image stitching ───────────────────────────────────────────────────────────
+
+
+def stitch_tiles(
+    tile_results: list[tuple[Path, float, float, int, int]],
+    grid: int,
+    tile_size: int = DEFAULT_TILE_SIZE,
+) -> np.ndarray:
+    """
+    Stitch downloaded tiles into a single large image.
+
+    Tile positions (col, row) determine where each tile is placed in the canvas.
+    Missing tiles are filled with black.
+    """
+    canvas_size = grid * tile_size
+    canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
+
+    for fpath, _, _, col, row in tile_results:
+        img = cv2.imread(str(fpath))
+        if img is None:
+            continue
+        x0 = col * tile_size
+        y0 = row * tile_size
+        canvas[y0:y0 + tile_size, x0:x0 + tile_size] = img
+
+    return canvas
+
+
+# ── Grid-aware lat/lon -> pixel projection ────────────────────────────────────
+
+
+def _latlon_to_grid_pixel(
+    lat: float,
+    lon: float,
+    grid_centre_lat: float,
+    grid_centre_lon: float,
+    zoom: int,
+    grid: int,
+    tile_size: int = DEFAULT_TILE_SIZE,
+) -> tuple[int, int]:
+    """
+    Convert lat/lon to pixel coordinates on the stitched grid image.
+
+    The grid image is (grid * tile_size) × (grid * tile_size) pixels,
+    centred on (grid_centre_lat, grid_centre_lon).
+    """
+    C = 40075016.686
+    metres_per_px = C * math.cos(math.radians(grid_centre_lat)) / (2 ** (zoom + 8))
+
+    dlat_m = (lat - grid_centre_lat) * (math.pi / 180) * 6371000
+    dlon_m = (lon - grid_centre_lon) * (math.pi / 180) * 6371000 * math.cos(math.radians(grid_centre_lat))
+
+    canvas_size = grid * tile_size
+    cx, cy = canvas_size // 2, canvas_size // 2
+
+    px = cx + int(dlon_m / metres_per_px)
+    py = cy - int(dlat_m / metres_per_px)
+
+    return max(0, min(canvas_size - 1, px)), max(0, min(canvas_size - 1, py))
 
 
 # ── Annotation ────────────────────────────────────────────────────────────────
 
 
-def annotate_tile(tile_path: Path, result: FootprintQueryResult) -> np.ndarray:
+def annotate_image(
+    img: np.ndarray,
+    result: FootprintQueryResult,
+    grid_centre_lat: float,
+    grid_centre_lon: float,
+    zoom: int,
+    grid: int,
+    tile_size: int = DEFAULT_TILE_SIZE,
+) -> np.ndarray:
     """
-    Draw coloured building polygon overlays on the satellite tile.
+    Draw coloured building polygon overlays on the (stitched) satellite image.
     Each polygon label shows the building area in m2.
     """
-    img = cv2.imread(str(tile_path))
-    if img is None:
-        img = np.zeros((DEFAULT_TILE_SIZE, DEFAULT_TILE_SIZE, 3), dtype=np.uint8)
-
+    canvas_size = grid * tile_size
     overlay = img.copy()
 
     for i, bldg in enumerate(result.buildings):
-        if not bldg.polygon or len(bldg.polygon) < 3:
+        if not bldg.polygon_latlon or len(bldg.polygon_latlon) < 3:
             continue
 
         colour = _COLOURS[i % len(_COLOURS)]
-        pts = np.array([[p[0], p[1]] for p in bldg.polygon], dtype=np.int32)
-        pts = np.clip(pts, 0, DEFAULT_TILE_SIZE - 1)
+
+        pts = np.array([
+            _latlon_to_grid_pixel(lat, lon, grid_centre_lat, grid_centre_lon, zoom, grid, tile_size)
+            for lon, lat in bldg.polygon_latlon
+        ], dtype=np.int32)
 
         cv2.fillPoly(overlay, [pts], colour)
         cv2.polylines(img, [pts], isClosed=True, color=colour, thickness=2)
@@ -158,8 +258,8 @@ def annotate_tile(tile_path: Path, result: FootprintQueryResult) -> np.ndarray:
         font_scale = 0.4
         thickness = 1
         (tw, th), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-        tx_label = max(0, cx - tw // 2)
-        ty_label = max(th + 4, cy)
+        tx_label = max(0, min(canvas_size - tw - 4, cx - tw // 2))
+        ty_label = max(th + 4, min(canvas_size - baseline - 2, cy))
         cv2.rectangle(
             img,
             (tx_label - 2, ty_label - th - 2),
@@ -175,10 +275,16 @@ def annotate_tile(tile_path: Path, result: FootprintQueryResult) -> np.ndarray:
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 
-def print_summary(result: FootprintQueryResult, tag: str) -> str:
+def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
     """Format and print a summary table. Returns the text."""
-    tile_area = DEFAULT_TILE_SIZE * DEFAULT_TILE_SIZE * (0.298 ** 2)  # approx m2 at zoom 19
+    C = 40075016.686
+    metres_per_px = C * math.cos(math.radians(result.query_lat)) / (2 ** (DEFAULT_ZOOM + 8))
+    px_per_side = DEFAULT_TILE_SIZE * grid
+    tile_area = (px_per_side * metres_per_px) ** 2
     coverage_pct = (result.total_area_m2 / tile_area * 100) if tile_area > 0 else 0
+
+    area_label = f"{grid}x{grid} tile grid" if grid > 1 else "single tile"
+    side_m = int(px_per_side * metres_per_px)
 
     lines = [
         "",
@@ -186,9 +292,10 @@ def print_summary(result: FootprintQueryResult, tag: str) -> str:
         f"  Raising Rooves - Building Footprint Analysis: {tag}",
         "=" * 60,
         f"  Source           : OSM Overpass API (OpenStreetMap)",
+        f"  Area queried     : {area_label} (~{side_m}x{side_m} m)",
         f"  Buildings found  : {result.count}",
         f"  Total roof area  : {result.total_area_m2:,.0f} m2",
-        f"  Approx tile area : {tile_area:,.0f} m2",
+        f"  Approx area      : {tile_area:,.0f} m2",
         f"  Roof coverage    : {coverage_pct:.1f} %",
         "-" * 60,
     ]
@@ -220,6 +327,17 @@ def main() -> None:
     parser.add_argument("--lon", type=float, help="Longitude (required with --lat)")
     parser.add_argument("--zoom", type=int, default=DEFAULT_ZOOM)
     parser.add_argument(
+        "--grid",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "Download an NxN grid of tiles and query all buildings in the combined area. "
+            "1 = single tile (~190x190m), 3 = ~570x570m, 5 = ~950x950m. "
+            "Must be an odd number. Default: 1."
+        ),
+    )
+    parser.add_argument(
         "--footprint-file",
         type=Path,
         default=None,
@@ -228,6 +346,9 @@ def main() -> None:
     )
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+
+    if args.grid < 1 or args.grid % 2 == 0:
+        parser.error("--grid must be an odd number >= 1 (e.g. 1, 3, 5, 7)")
 
     level = "DEBUG" if args.debug else "INFO"
     setup_logging("analyse_coordinate", level=level)
@@ -250,37 +371,69 @@ def main() -> None:
     tile_dir = ensure_dir(TILES_DIR / "coordinate_analysis")
     out_dir = ensure_dir(OUTPUT_DIR)
 
-    # Step 1: Download satellite tile (background visual only)
-    tile_result = download_tile(lat, lon, args.zoom, tile_dir)
-    if tile_result is None:
-        logger.error("No tile downloaded. Check GOOGLE_MAPS_API_KEY.")
+    # Step 1: Download tile grid
+    logger.info(
+        "Downloading %dx%d tile grid around (%.5f, %.5f)...",
+        args.grid, args.grid, lat, lon,
+    )
+    tile_results = download_grid(lat, lon, args.zoom, args.grid, tile_dir)
+    if not tile_results:
+        logger.error("No tiles downloaded. Check GOOGLE_MAPS_API_KEY.")
         sys.exit(1)
-    tile_path, tile_lat, tile_lon = tile_result
-    logger.info("Tile: %s (centre %.5f, %.5f)", tile_path.name, tile_lat, tile_lon)
 
-    # Step 2: Query building footprints
+    # Compute the grid centre (centre tile's centre lat/lon)
+    cx, cy = latlon_to_tile(lat, lon, args.zoom)
+    grid_centre_lat, grid_centre_lon = tile_centre_latlon(cx, cy, args.zoom)
+
+    # Compute combined bbox from all tile corners
+    all_lats = [tlat for _, tlat, _, _, _ in tile_results]
+    all_lons = [tlon for _, _, tlon, _, _ in tile_results]
+    C = 40075016.686
+    metres_per_px = C * math.cos(math.radians(grid_centre_lat)) / (2 ** (args.zoom + 8))
+    half_tile_deg_lat = (DEFAULT_TILE_SIZE / 2 * metres_per_px) / 111320.0
+    half_tile_deg_lon = (DEFAULT_TILE_SIZE / 2 * metres_per_px) / (111320.0 * math.cos(math.radians(grid_centre_lat)))
+
+    south = min(all_lats) - half_tile_deg_lat
+    north = max(all_lats) + half_tile_deg_lat
+    west  = min(all_lons) - half_tile_deg_lon
+    east  = max(all_lons) + half_tile_deg_lon
+
+    # Step 2: Query building footprints for the full grid bbox
     source_label = f"local file: {args.footprint_file}" if args.footprint_file else "OSM Overpass API"
     logger.info("Querying building footprints via %s...", source_label)
     try:
-        footprint_result = query_buildings_in_tile(
-            centre_lat=tile_lat,
-            centre_lon=tile_lon,
-            zoom=args.zoom,
+        from stage1_segmentation.building_footprint_segmenter import BuildingFootprint
+        buildings = query_buildings_in_bbox(
+            south=south, west=west, north=north, east=east,
             local_file=args.footprint_file,
         )
     except (RuntimeError, FileNotFoundError) as exc:
         logger.error("%s", exc)
         sys.exit(1)
 
-    # Step 3: Print summary
-    summary_text = print_summary(footprint_result, tag)
+    footprint_result = FootprintQueryResult(
+        query_lat=lat,
+        query_lon=lon,
+        tile_bbox=(south, west, north, east),
+        buildings=buildings,
+    )
 
-    # Step 4: Save outputs
-    img = annotate_tile(tile_path, footprint_result)
+    # Step 3: Print summary
+    summary_text = print_summary(footprint_result, tag, args.grid)
+
+    # Step 4: Stitch tiles and annotate
+    stitched = stitch_tiles(tile_results, args.grid)
+    annotated = annotate_image(
+        stitched, footprint_result,
+        grid_centre_lat, grid_centre_lon,
+        args.zoom, args.grid,
+    )
+
     img_path = out_dir / f"{tag}_annotated.png"
-    cv2.imwrite(str(img_path), img)
+    cv2.imwrite(str(img_path), annotated)
     logger.info("Annotated image -> %s", img_path)
 
+    # Step 5: Save CSV
     csv_path = out_dir / f"{tag}_buildings.csv"
     if footprint_result.buildings:
         with open(csv_path, "w", newline="") as f:
