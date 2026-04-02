@@ -98,6 +98,56 @@ python -m tools.analyse_coordinate --suburb Clayton --debug
 
 ---
 
+## Project structure
+
+```
+Raising Rooves Model/
+├── tools/
+│   └── analyse_coordinate.py        # MVP: analyse any lat/lon or suburb
+│
+├── stage1_segmentation/
+│   ├── pipeline.py                  # Full suburb pipeline orchestrator
+│   ├── run_stage1.py                # CLI entry point
+│   ├── building_footprint_segmenter.py  # OSM Overpass API queries
+│   └── tile_downloader.py           # Google Maps tile fetcher
+│
+├── stage2_irradiance/               # Coming next
+│
+├── config/
+│   ├── settings.py                  # Paths, API endpoints, constants
+│   └── suburbs.py                   # Melbourne suburb bounding boxes
+│
+├── shared/
+│   ├── geo_utils.py                 # Tile maths, coordinate transforms
+│   ├── file_io.py                   # Parquet/CSV read-write helpers
+│   ├── logging_config.py            # Structured logging setup
+│   └── validation.py                # Env var and data validation
+│
+├── data/
+│   ├── raw/tiles/                   # Downloaded satellite tiles (gitignored)
+│   └── output/                      # Annotated images, CSVs, Parquet files
+│
+├── research/findings/               # Research notes (markdown)
+├── tests/                           # pytest tests
+├── CLAUDE.md                        # Instructions for Claude Code AI assistant
+└── requirements.txt
+```
+
+### Adding a new suburb
+
+Open [config/suburbs.py](config/suburbs.py) and add an entry with the suburb name and bounding box `(south, west, north, east)` in decimal degrees. You can get a bounding box from [bboxfinder.com](http://bboxfinder.com).
+
+---
+
+## Known limitations
+
+- **OSM coverage** — inner Melbourne suburbs are well-mapped; newer outer-suburb developments may have gaps. Use `--footprint-file` with the Microsoft dataset for better coverage in those areas.
+- **Google Maps API cost** — $200/month free credit; each tile costs ~$0.002. A 5×5 grid = 25 tiles = ~$0.05. Fine for development, watch usage if running bulk suburb scans.
+- **OSM data lag** — very new buildings (built in the last few months) may not yet be in OpenStreetMap.
+- **Area accuracy** — footprint areas are the building footprint, not the actual roof area (e.g. a pitched roof has more surface area than its footprint). This is a known approximation for Stage 1.
+
+---
+
 ## Running tests
 
 ```bash
