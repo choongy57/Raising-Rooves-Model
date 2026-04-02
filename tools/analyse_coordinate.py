@@ -20,6 +20,9 @@ Usage:
     # 5x5 tile grid (~950x950m):
     python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --grid 5
 
+    # 500m radius around the point (~1000x1000m):
+    python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --radius 500
+
     # By suburb name (uses centroid from config):
     python -m tools.analyse_coordinate --suburb Clayton
 
@@ -86,6 +89,14 @@ _COLOURS = [
 ]
 
 
+# ── Tile size ─────────────────────────────────────────────────────────────────
+# 512px per tile is chosen deliberately: 512 / 256 = 2 web-mercator tile widths,
+# which matches TILE_STEP=2 exactly. Adjacent tiles start precisely where the
+# previous one ends → zero-seam stitching. (640px tiles cover 2.5 WM widths,
+# which causes a 128px geographic jump at every seam when step=2.)
+_GRID_TILE_SIZE = 512
+
+
 # ── Tile download ─────────────────────────────────────────────────────────────
 
 
@@ -93,7 +104,7 @@ def _download_tile(lat: float, lon: float, zoom: int, save_path: Path) -> bool:
     url = (
         f"{GOOGLE_MAPS_BASE_URL}"
         f"?center={lat},{lon}&zoom={zoom}"
-        f"&size={DEFAULT_TILE_SIZE}x{DEFAULT_TILE_SIZE}"
+        f"&size={_GRID_TILE_SIZE}x{_GRID_TILE_SIZE}"
         f"&maptype=satellite"
         f"&key={GOOGLE_MAPS_API_KEY}"
     )
@@ -171,14 +182,15 @@ def download_grid(
 def stitch_tiles(
     tile_results: list[tuple[Path, float, float, int, int]],
     grid: int,
-    tile_size: int = DEFAULT_TILE_SIZE,
 ) -> np.ndarray:
     """
     Stitch downloaded tiles into a single large image.
 
     Tile positions (col, row) determine where each tile is placed in the canvas.
-    Missing tiles are filled with black.
+    Missing tiles are filled with black. Uses _GRID_TILE_SIZE (512px) tiles which
+    align perfectly with TILE_STEP=2 — no seams.
     """
+    tile_size = _GRID_TILE_SIZE
     canvas_size = grid * tile_size
     canvas = np.zeros((canvas_size, canvas_size, 3), dtype=np.uint8)
 
@@ -186,6 +198,8 @@ def stitch_tiles(
         img = cv2.imread(str(fpath))
         if img is None:
             continue
+        if img.shape[0] != tile_size or img.shape[1] != tile_size:
+            img = cv2.resize(img, (tile_size, tile_size))
         x0 = col * tile_size
         y0 = row * tile_size
         canvas[y0:y0 + tile_size, x0:x0 + tile_size] = img
@@ -199,17 +213,16 @@ def stitch_tiles(
 _TILE_STEP = 2  # tile units between adjacent downloaded images (see download_grid)
 
 
-def _metres_per_canvas_px(centre_lat: float, zoom: int, tile_size: int = DEFAULT_TILE_SIZE) -> float:
+def _metres_per_canvas_px(centre_lat: float, zoom: int) -> float:
     """
     Return the real-world scale of one canvas pixel in metres.
 
-    Adjacent tile centres are _TILE_STEP * 256 Web-Mercator pixels apart
-    geographically, but placed tile_size canvas pixels apart in the stitch.
-    Scale = (step * 256 WM px * metres_per_WM_px) / tile_size canvas px.
+    With _GRID_TILE_SIZE=512 and _TILE_STEP=2:
+      512 canvas px = TILE_STEP * 256 = 512 WM px  →  1 canvas px = 1 WM px.
+    Scale simplifies to the standard web-mercator ground resolution.
     """
     C = 40075016.686
-    metres_per_wm_px = C * math.cos(math.radians(centre_lat)) / (2 ** (zoom + 8))
-    return metres_per_wm_px * (_TILE_STEP * 256) / tile_size
+    return C * math.cos(math.radians(centre_lat)) / (2 ** (zoom + 8))
 
 
 def _latlon_to_grid_pixel(
@@ -219,20 +232,19 @@ def _latlon_to_grid_pixel(
     grid_centre_lon: float,
     zoom: int,
     grid: int,
-    tile_size: int = DEFAULT_TILE_SIZE,
 ) -> tuple[int, int]:
     """
     Convert lat/lon to pixel coordinates on the stitched grid image.
 
-    Uses the canvas scale (_metres_per_canvas_px) which accounts for the
-    TILE_STEP=2 spacing between downloaded tile images.
+    With 512px tiles and TILE_STEP=2, one canvas pixel = one web-mercator pixel,
+    so the projection is just standard WM math.
     """
-    mpp = _metres_per_canvas_px(grid_centre_lat, zoom, tile_size)
+    mpp = _metres_per_canvas_px(grid_centre_lat, zoom)
 
     dlat_m = (lat - grid_centre_lat) * (math.pi / 180) * 6371000
     dlon_m = (lon - grid_centre_lon) * (math.pi / 180) * 6371000 * math.cos(math.radians(grid_centre_lat))
 
-    canvas_size = grid * tile_size
+    canvas_size = grid * _GRID_TILE_SIZE
     cx, cy = canvas_size // 2, canvas_size // 2
 
     px = cx + int(dlon_m / mpp)
@@ -251,13 +263,12 @@ def annotate_image(
     grid_centre_lon: float,
     zoom: int,
     grid: int,
-    tile_size: int = DEFAULT_TILE_SIZE,
 ) -> np.ndarray:
     """
     Draw coloured building polygon overlays on the (stitched) satellite image.
     Each polygon label shows the building area in m2.
     """
-    canvas_size = grid * tile_size
+    canvas_size = grid * _GRID_TILE_SIZE
     overlay = img.copy()
 
     for i, bldg in enumerate(result.buildings):
@@ -267,7 +278,7 @@ def annotate_image(
         colour = _COLOURS[i % len(_COLOURS)]
 
         pts = np.array([
-            _latlon_to_grid_pixel(lat, lon, grid_centre_lat, grid_centre_lon, zoom, grid, tile_size)
+            _latlon_to_grid_pixel(lat, lon, grid_centre_lat, grid_centre_lon, zoom, grid)
             for lon, lat in bldg.polygon_latlon
         ], dtype=np.int32)
 
@@ -301,7 +312,7 @@ def annotate_image(
 def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
     """Format and print a summary table. Returns the text."""
     mpp = _metres_per_canvas_px(result.query_lat, DEFAULT_ZOOM)
-    px_per_side = DEFAULT_TILE_SIZE * grid
+    px_per_side = _GRID_TILE_SIZE * grid
     tile_area = (px_per_side * mpp) ** 2
     coverage_pct = (result.total_area_m2 / tile_area * 100) if tile_area > 0 else 0
 
@@ -348,15 +359,28 @@ def main() -> None:
     group.add_argument("--suburb", type=str, help="Suburb name from config")
     parser.add_argument("--lon", type=float, help="Longitude (required with --lat)")
     parser.add_argument("--zoom", type=int, default=DEFAULT_ZOOM)
-    parser.add_argument(
+    size_group = parser.add_mutually_exclusive_group()
+    size_group.add_argument(
         "--grid",
         type=int,
-        default=1,
+        default=None,
         metavar="N",
         help=(
             "Download an NxN grid of tiles and query all buildings in the combined area. "
             "1 = single tile (~190x190m), 3 = ~570x570m, 5 = ~950x950m. "
-            "Must be an odd number. Default: 1."
+            "Must be an odd number. Mutually exclusive with --radius."
+        ),
+    )
+    size_group.add_argument(
+        "--radius",
+        type=int,
+        default=None,
+        metavar="METRES",
+        help=(
+            "Query radius in metres from the centre coordinate. "
+            "Automatically chooses the smallest odd grid that covers the diameter. "
+            "e.g. --radius 500 covers a ~1000x1000m area. "
+            "Mutually exclusive with --grid."
         ),
     )
     parser.add_argument(
@@ -369,7 +393,7 @@ def main() -> None:
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
 
-    if args.grid < 1 or args.grid % 2 == 0:
+    if args.grid is not None and (args.grid < 1 or args.grid % 2 == 0):
         parser.error("--grid must be an odd number >= 1 (e.g. 1, 3, 5, 7)")
 
     level = "DEBUG" if args.debug else "INFO"
@@ -388,6 +412,22 @@ def main() -> None:
         lat, lon = args.lat, args.lon
         tag = f"{lat:.5f}_{lon:.5f}"
 
+    # Resolve grid size (radius → grid conversion happens here so we have lat)
+    if args.radius is not None:
+        mpp_for_radius = _metres_per_canvas_px(lat, args.zoom)
+        metres_per_tile = _GRID_TILE_SIZE * mpp_for_radius
+        raw = math.ceil((2 * args.radius) / metres_per_tile)
+        grid = raw if raw % 2 == 1 else raw + 1
+        grid = max(1, grid)
+        logger.info(
+            "Radius %dm → %dx%d grid (~%dm coverage per side)",
+            args.radius, grid, grid, int(grid * metres_per_tile),
+        )
+    elif args.grid is not None:
+        grid = args.grid
+    else:
+        grid = 1
+
     validate_env_vars(["GOOGLE_MAPS_API_KEY"])
 
     tile_dir = ensure_dir(TILES_DIR / "coordinate_analysis")
@@ -396,9 +436,9 @@ def main() -> None:
     # Step 1: Download tile grid
     logger.info(
         "Downloading %dx%d tile grid around (%.5f, %.5f)...",
-        args.grid, args.grid, lat, lon,
+        grid, grid, lat, lon,
     )
-    tile_results = download_grid(lat, lon, args.zoom, args.grid, tile_dir)
+    tile_results = download_grid(lat, lon, args.zoom, grid, tile_dir)
     if not tile_results:
         logger.error("No tiles downloaded. Check GOOGLE_MAPS_API_KEY.")
         sys.exit(1)
@@ -411,7 +451,7 @@ def main() -> None:
     # Canvas is (grid * tile_size) px; each canvas pixel = _metres_per_canvas_px metres.
     # The OSM query must cover everything the canvas can show.
     mpp = _metres_per_canvas_px(grid_centre_lat, args.zoom)
-    canvas_half_px = (args.grid * DEFAULT_TILE_SIZE) / 2
+    canvas_half_px = (grid * _GRID_TILE_SIZE) / 2
     metres_half = canvas_half_px * mpp * 1.05  # 5% padding so edge buildings aren't clipped
 
     dlat = metres_half / 111320.0
@@ -443,14 +483,14 @@ def main() -> None:
     )
 
     # Step 3: Print summary
-    summary_text = print_summary(footprint_result, tag, args.grid)
+    summary_text = print_summary(footprint_result, tag, grid)
 
     # Step 4: Stitch tiles and annotate
-    stitched = stitch_tiles(tile_results, args.grid)
+    stitched = stitch_tiles(tile_results, grid)
     annotated = annotate_image(
         stitched, footprint_result,
         grid_centre_lat, grid_centre_lon,
-        args.zoom, args.grid,
+        args.zoom, grid,
     )
 
     img_path = out_dir / f"{tag}_annotated.png"
