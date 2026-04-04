@@ -67,8 +67,8 @@ python -m tools.analyse_coordinate --suburb Clayton --debug
 | File | Contents |
 |------|----------|
 | `<tag>_annotated.png` | Satellite image with coloured building polygon overlays |
-| `<tag>_buildings.csv` | Per-building area (m²), centroid lat/lon, OSM building ID |
-| `<tag>_summary.txt` | Total buildings, total roof area, coverage % |
+| `<tag>_buildings.csv` | Per-building: area (m²), centroid, building type, levels, roof material/colour/shape |
+| `<tag>_summary.txt` | Total buildings, total roof area, coverage %, OSM tag coverage stats |
 
 ---
 

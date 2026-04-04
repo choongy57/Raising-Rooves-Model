@@ -64,16 +64,27 @@ Uses **OpenStreetMap building footprints** via the Overpass API — no GPU, no A
 - **Legacy files** (not used in pipeline, kept for reference): `gemini_segmenter.py`, `solar_api_segmenter.py`, `sam_segmenter.py`
 
 ## Stage 1 — Known Gaps (next steps)
-These are the things Stage 1 does NOT yet capture but should before Stage 2:
-1. **OSM roof tags** — Overpass already returns `roof:material`, `roof:colour`, `roof:shape`, `building:levels` tags. We discard them. Should extract and add to output.
+1. ~~**OSM roof tags**~~ — DONE. `roof:material`, `roof:colour`, `roof:shape`, `building:levels`, `building_type` now extracted and included in output.
 2. **Roof material fallback** — `roof_classifier.py` exists (HSV-based pixel classifier) but is NOT wired into the pipeline. Should call it when OSM has no `roof:material` tag.
-3. **Building type** — OSM `building=residential/commercial/industrial` is available and useful for Stage 3 modelling. Not extracted.
+3. **Building type coverage** — outer suburbs have lower OSM tag coverage; consider Overture Maps if gaps become an issue.
 
 ## Stage 2 — Irradiance & Climate Data (NOT STARTED)
 - Pull solar irradiance from BARRA2 (BOM, 4km resolution) via OPeNDAP
 - ERA5 as fallback
 - Match per-suburb building data from Stage 1 to nearest climate grid cell
 - Output: irradiance + temperature per suburb per time period
+
+## Git Workflow
+- **`git add` + `git commit`** only — do NOT `git push` unless Ryan explicitly asks
+- Commit after each meaningful unit of work (one feature, one fix)
+- Write commit messages that explain *why*, not just *what*
+
+## README Updates
+Update `README.md` when:
+- A new feature is added to a CLI tool (new flag, new output column, etc.)
+- A new pipeline stage is started or completed
+- A known limitation is resolved
+- Do NOT update README for internal refactors, comment fixes, or minor cleanups
 
 ## Debugging
 - All CLI entry points accept `--debug` to set logging to DEBUG level
