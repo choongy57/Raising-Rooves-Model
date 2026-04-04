@@ -137,10 +137,9 @@ def download_grid(
     """
     Download a grid x grid set of tiles centred on (centre_lat, centre_lon).
 
-    Each 640px Google Maps image covers 640/256 = 2.5 standard map tile widths,
-    so stepping by 1 tile unit causes 60% geographic overlap between adjacent
-    images. We step by TILE_STEP=2 tile units so adjacent images share only a
-    small ~38m overlap and the stitched result covers a genuinely larger area.
+    Each tile is _GRID_TILE_SIZE=512px, which is exactly 2 web-mercator tile widths
+    (512/256=2). Stepping by TILE_STEP=2 tile units means adjacent tile centres are
+    spaced precisely one tile width apart — tiles stitch with zero gap or overlap.
 
     Returns list of (path, tile_lat, tile_lon, col_offset, row_offset) tuples,
     where col_offset/row_offset are the tile's 0-indexed position in the canvas
@@ -149,8 +148,8 @@ def download_grid(
     ensure_dir(tile_dir)
     cx, cy = latlon_to_tile(centre_lat, centre_lon, zoom)
     half = grid // 2
-    # Step 2 tile units between adjacent images: each 640px image is 2.5 tile
-    # widths across, so step=2 gives a small overlap (~38m) with no black gaps.
+    # Step 2 tile units between adjacent images: 512px = 2 WM tile widths = TILE_STEP,
+    # so adjacent images start exactly where the previous one ends — no seams.
     TILE_STEP = 2
 
     results = []
@@ -466,7 +465,6 @@ def main() -> None:
     source_label = f"local file: {args.footprint_file}" if args.footprint_file else "OSM Overpass API"
     logger.info("Querying building footprints via %s...", source_label)
     try:
-        from stage1_segmentation.building_footprint_segmenter import BuildingFootprint
         buildings = query_buildings_in_bbox(
             south=south, west=west, north=north, east=east,
             local_file=args.footprint_file,

@@ -3,7 +3,7 @@
 ## Project Identity
 Monash University Final Year Project (2026). Builds a data pipeline to model cool roof treatment benefits across Melbourne suburbs.
 
-**Current scope:** Stage 1 (Roof Segmentation) and Stage 2 (Irradiance & Climate Data) only.
+**Current scope:** Stage 1 (Roof Segmentation) is complete. Stage 2 (Irradiance & Climate Data) is next.
 
 **Team:** Ryan, Seamus, Angus, Flynn, Maggie, Gabrielle. **Supervisor:** Stuart.
 
@@ -30,42 +30,54 @@ Monash University Final Year Project (2026). Builds a data pipeline to model coo
 
 ## Run Commands
 ```bash
-# ── MVP: Analyse a single coordinate (OSM building footprints, no key needed) ──
+# ── MVP: Analyse a single coordinate ──
 python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185
 python -m tools.analyse_coordinate --suburb Clayton
+python -m tools.analyse_coordinate --suburb Clayton --radius 500   # 500m radius
+python -m tools.analyse_coordinate --suburb Clayton --grid 5       # explicit 5x5 grid
 python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --debug
-# With local MS Building Footprints file (optional, ~845MB download):
+# Optional: local MS Building Footprints (~845MB download):
 python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --footprint-file data/raw/footprints/australia.geojson
 
 # ── Stage 1: Full suburb roof segmentation ──
 python -m stage1_segmentation.run_stage1 --suburb "Richmond"
 python -m stage1_segmentation.run_stage1 --suburb "Richmond" --debug
 python -m stage1_segmentation.run_stage1 --suburb "Richmond" --max-tiles 10  # smoke test
+python -m stage1_segmentation.run_stage1 --list-suburbs                      # list available suburbs
 
-# ── Stage 2: Irradiance & Climate Data ──
-python -m stage2_irradiance.run_stage2 --suburb "Richmond"
-python -m stage2_irradiance.run_stage2 --suburb "Richmond" --debug
+# ── Stage 2: Irradiance & Climate Data (not yet implemented) ──
+# python -m stage2_irradiance.run_stage2 --suburb "Richmond"
 
 # ── Tests ──
 python -m pytest tests/
 ```
 
-## Segmentation Approach
-Stage 1 uses **OpenStreetMap building footprints** via the Overpass API — no GPU, no API key, no large download.
-- `building_footprint_segmenter.py` queries OSM Overpass API for all buildings in a tile bounding box
-- Returns actual polygon vertices (lat/lon), measured area (m²), and OSM building ID per building
-- Polygons projected to tile pixel space via Mercator math; overlaid on satellite imagery
-- Response time: ~15 seconds per tile bbox (Overpass server processing)
-- **Local alternative:** Pass `--footprint-file` pointing at a local Microsoft Australia Building Footprints GeoJSON
-  - Download from: https://github.com/microsoft/AustraliaBuildingFootprints (~845 MB zipped, covers all Melbourne)
-  - Faster repeated queries; same ODbL license
+## Stage 1 — Segmentation (COMPLETE)
+Uses **OpenStreetMap building footprints** via the Overpass API — no GPU, no API key, no ML.
+- One Overpass query per suburb bbox (~15s) returns all building polygons
+- Returns polygon vertices (lat/lon), area (m²), OSM building ID per building
+- Satellite tiles (512×512px, zoom 19, TILE_STEP=2) stitch seamlessly — zero seam
+- Output: `data/output/stage1_{suburb}.parquet` with columns: suburb, building_id, roof_id, area_m2, lat, lon, source
+- **Local alternative:** `--footprint-file` → Microsoft Australia Building Footprints GeoJSON
+  - Download: https://github.com/microsoft/AustraliaBuildingFootprints (~845 MB zipped)
+  - Better outer-suburb coverage; same ODbL license
+- **Legacy files** (not used in pipeline, kept for reference): `gemini_segmenter.py`, `solar_api_segmenter.py`, `sam_segmenter.py`
 
-The legacy Gemini Vision segmenter (`gemini_segmenter.py`) is retained for reference.
+## Stage 1 — Known Gaps (next steps)
+These are the things Stage 1 does NOT yet capture but should before Stage 2:
+1. **OSM roof tags** — Overpass already returns `roof:material`, `roof:colour`, `roof:shape`, `building:levels` tags. We discard them. Should extract and add to output.
+2. **Roof material fallback** — `roof_classifier.py` exists (HSV-based pixel classifier) but is NOT wired into the pipeline. Should call it when OSM has no `roof:material` tag.
+3. **Building type** — OSM `building=residential/commercial/industrial` is available and useful for Stage 3 modelling. Not extracted.
+
+## Stage 2 — Irradiance & Climate Data (NOT STARTED)
+- Pull solar irradiance from BARRA2 (BOM, 4km resolution) via OPeNDAP
+- ERA5 as fallback
+- Match per-suburb building data from Stage 1 to nearest climate grid cell
+- Output: irradiance + temperature per suburb per time period
 
 ## Debugging
 - All CLI entry points accept `--debug` to set logging to DEBUG level
 - Logs output to both console and `logs/{module}_{date}.log`
-- Stage 1 segmentation saves masks to `data/processed/masks/` for visual inspection
 - MVP tool saves annotated PNG + CSV to `data/output/`
 
 ## Research Skill

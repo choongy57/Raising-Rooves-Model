@@ -146,7 +146,8 @@ def _polygon_area_m2(polygon_latlon: list[list[float]]) -> float:
         # Scale x (lon) and y (lat) independently then compute area
         scaled_pts = [(x * lon_scale, y * lat_scale) for x, y in geom.exterior.coords]
         return abs(sg.Polygon(scaled_pts).area)
-    except Exception:
+    except Exception as exc:
+        logger.debug("Could not compute area for polygon: %s", exc)
         return 0.0
 
 
@@ -433,7 +434,7 @@ def query_buildings_in_tile(
     Args:
         centre_lat/lon: Centre coordinate of the tile.
         zoom: Tile zoom level (default 19).
-        tile_size: Tile edge in pixels (default 640).
+        tile_size: Tile edge in pixels (default from settings).
         local_file: Optional path to local GeoJSON footprints file.
 
     Returns:
