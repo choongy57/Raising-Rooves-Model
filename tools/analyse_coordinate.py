@@ -318,6 +318,14 @@ def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
     area_label = f"{grid}x{grid} tile grid" if grid > 1 else "single tile"
     side_m = int(px_per_side * mpp)
 
+    # Tag coverage stats
+    n = result.count
+    def _pct(field: str) -> str:
+        if n == 0:
+            return "n/a"
+        count = sum(1 for b in result.buildings if getattr(b, field) is not None)
+        return f"{count}/{n} ({100*count//n}%)"
+
     lines = [
         "",
         "=" * 60,
@@ -326,18 +334,26 @@ def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
         f"  Source           : OSM Overpass API (OpenStreetMap)",
         f"  Area queried     : {area_label} (~{side_m}x{side_m} m)",
         f"  Buildings found  : {result.count}",
-        f"  Total roof area  : {result.total_area_m2:,.0f} m2",
-        f"  Approx area      : {tile_area:,.0f} m2",
+        f"  Total roof area  : {result.total_area_m2:,.0f} m²",
+        f"  Approx area      : {tile_area:,.0f} m²",
         f"  Roof coverage    : {coverage_pct:.1f} %",
+        "-" * 60,
+        f"  OSM tag coverage :",
+        f"    building_type  : {_pct('building_type')}",
+        f"    levels         : {_pct('levels')}",
+        f"    roof_material  : {_pct('roof_material')}",
+        f"    roof_shape     : {_pct('roof_shape')}",
+        f"    roof_colour    : {_pct('roof_colour')}",
         "-" * 60,
     ]
 
     if result.buildings:
-        lines.append(f"  {'#':<5} {'Building ID':<15} {'Area (m2)':>10}  {'Source'}")
-        lines.append(f"  {'-'*5} {'-'*15} {'-'*10}  {'-'*6}")
+        lines.append(f"  {'#':<5} {'Building ID':<15} {'Area (m²)':>10}  {'Type':<15} {'Material'}")
+        lines.append(f"  {'-'*5} {'-'*15} {'-'*10}  {'-'*15} {'-'*8}")
         for i, bldg in enumerate(sorted(result.buildings, key=lambda b: -b.area_m2)):
             lines.append(
-                f"  {i+1:<5} {bldg.building_id:<15} {bldg.area_m2:>10,.1f}  {bldg.source}"
+                f"  {i+1:<5} {bldg.building_id:<15} {bldg.area_m2:>10,.1f}"
+                f"  {(bldg.building_type or '-'):<15} {bldg.roof_material or '-'}"
             )
 
     lines.append("=" * 60)
@@ -499,7 +515,12 @@ def main() -> None:
     csv_path = out_dir / f"{tag}_buildings.csv"
     if footprint_result.buildings:
         with open(csv_path, "w", newline="") as f:
-            fieldnames = ["building_id", "area_m2", "source", "centroid_lon", "centroid_lat"]
+            fieldnames = [
+                "building_id", "area_m2", "source",
+                "centroid_lat", "centroid_lon",
+                "building_type", "levels",
+                "roof_material", "roof_colour", "roof_shape",
+            ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for bldg in footprint_result.buildings:
@@ -509,8 +530,13 @@ def main() -> None:
                     "building_id": bldg.building_id,
                     "area_m2": bldg.area_m2,
                     "source": bldg.source,
-                    "centroid_lon": round(sum(lons) / len(lons), 6),
                     "centroid_lat": round(sum(lats) / len(lats), 6),
+                    "centroid_lon": round(sum(lons) / len(lons), 6),
+                    "building_type": bldg.building_type or "",
+                    "levels": bldg.levels if bldg.levels is not None else "",
+                    "roof_material": bldg.roof_material or "",
+                    "roof_colour": bldg.roof_colour or "",
+                    "roof_shape": bldg.roof_shape or "",
                 })
         logger.info("Buildings CSV -> %s", csv_path)
 

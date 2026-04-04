@@ -55,6 +55,13 @@ class BuildingFootprint:
     polygon: list[list[int]] = field(default_factory=list)  # pixel coords on tile
     source: str = "osm"                   # "osm" or "msft"
 
+    # OSM roof / building tags (None = not present in OSM data)
+    building_type: Optional[str] = None  # e.g. "residential", "commercial", "yes"
+    levels: Optional[int] = None         # building:levels tag
+    roof_material: Optional[str] = None  # roof:material, e.g. "metal", "tiles"
+    roof_colour: Optional[str] = None    # roof:colour, e.g. "grey", "#cc4444"
+    roof_shape: Optional[str] = None     # roof:shape, e.g. "flat", "gabled", "hipped"
+
 
 @dataclass
 class FootprintQueryResult:
@@ -229,7 +236,9 @@ def _osm_response_to_footprints(
     for elem in data.get("elements", []):
         if elem["type"] != "way":
             continue
-        if "building" not in elem.get("tags", {}):
+
+        tags = elem.get("tags", {})
+        if "building" not in tags:
             continue
 
         refs = elem.get("nodes", [])
@@ -247,12 +256,19 @@ def _osm_response_to_footprints(
             continue
 
         area = _polygon_area_m2(poly_latlon)
-        if area < 10:  # discard tiny slivers (< 10 m2)
+        if area < 10:  # discard tiny slivers (< 10 m²)
             continue
 
         pixel_poly = _project_polygon(
             poly_latlon, tile_centre_lat, tile_centre_lon, zoom, tile_size
         )
+
+        # Extract building:levels as int if present
+        levels_raw = tags.get("building:levels")
+        try:
+            levels = int(levels_raw) if levels_raw is not None else None
+        except (ValueError, TypeError):
+            levels = None
 
         footprints.append(BuildingFootprint(
             building_id=str(elem["id"]),
@@ -260,6 +276,11 @@ def _osm_response_to_footprints(
             polygon_latlon=poly_latlon,
             polygon=pixel_poly,
             source="osm",
+            building_type=tags.get("building") or None,
+            levels=levels,
+            roof_material=tags.get("roof:material") or None,
+            roof_colour=tags.get("roof:colour") or None,
+            roof_shape=tags.get("roof:shape") or None,
         ))
 
     return footprints

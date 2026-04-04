@@ -52,6 +52,11 @@ def _building_to_row(
         "lat": round(centroid_lat, 6),
         "lon": round(centroid_lon, 6),
         "source": building.source,
+        "building_type": building.building_type,
+        "levels": building.levels,
+        "roof_material": building.roof_material,
+        "roof_colour": building.roof_colour,
+        "roof_shape": building.roof_shape,
     }
 
 
