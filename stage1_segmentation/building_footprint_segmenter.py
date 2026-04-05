@@ -4,21 +4,26 @@ Building footprint segmenter for the Raising Rooves pipeline.
 Queries building footprint polygons for a lat/lon bounding box using
 the OpenStreetMap Overpass API — no API key, no large download required.
 
-As a local-file alternative, the module can also load building footprints
-from a GeoJSON file (e.g. the Microsoft Australia Building Footprints dataset,
-downloaded from https://github.com/microsoft/AustraliaBuildingFootprints).
-The Microsoft dataset is ~845 MB zipped and covers all of Australia including
-Melbourne. To use it: download, unzip, and set FOOTPRINT_LOCAL_FILE in
-config/settings.py (or pass local_file= to query_buildings_in_tile).
+As a local-file alternative, the module can load building footprints from a
+GeoJSON file. Two sources are supported and auto-detected by property keys:
+
+    VicMap Feature of Interest – Buildings (recommended for Melbourne)
+        Download: https://datashare.maps.vic.gov.au  (search "FOI Buildings")
+        Format: GeoJSON export.  Properties used: UFI, FEATURESUBTYPE, NUM_FLOORS.
+        Coverage: authoritative Victorian government data, 2–3 yr metro refresh cycle.
+        License: Creative Commons Attribution 4.0
+
+    Microsoft Australia Building Footprints (good outer-suburb fallback)
+        Download: https://github.com/microsoft/AustraliaBuildingFootprints (~845 MB)
+        Format: line-delimited GeoJSONL.
+        License: ODbL
+
+Usage: pass --footprint-file <path> to any CLI entry point, or set
+FOOTPRINT_LOCAL_FILE in config/settings.py.
 
 Primary source (default — no download needed):
     OpenStreetMap via Overpass API
     https://overpass-api.de/
-    License: ODbL
-
-Alternative local source:
-    Microsoft Australia Building Footprints
-    https://github.com/microsoft/AustraliaBuildingFootprints
     License: ODbL
 """
 
@@ -177,16 +182,19 @@ def _project_polygon(
 
 def _overpass_query(south: float, west: float, north: float, east: float) -> dict:
     """
-    Run an Overpass API query for all building ways in the given bbox.
+    Run an Overpass API query for all building ways and relations in the given bbox.
 
     Returns the raw JSON response dict.
     Raises RuntimeError on HTTP errors.
     """
-    # Query: all ways and relations tagged building=* within bbox
+    # Query: all ways AND relations tagged building=* within bbox.
+    # Relations cover large multi-outline buildings (apartment blocks, shopping centres)
+    # that are mapped as OSM multipolygons and would otherwise be silently skipped.
     query = f"""
 [out:json][timeout:{_OVERPASS_TIMEOUT}];
 (
   way["building"]({south},{west},{north},{east});
+  relation["building"]({south},{west},{north},{east});
 );
 out body;
 >;
@@ -213,6 +221,37 @@ out skel qt;
     return {}
 
 
+def _chain_way_node_refs(way_segs: list[list[int]]) -> list[int]:
+    """
+    Chain a list of OSM way node-ref sequences into a single ordered ring.
+
+    OSM multipolygon outer rings are sometimes split across multiple ways
+    that need to be stitched end-to-end by matching shared node IDs.
+    """
+    if not way_segs:
+        return []
+    result = list(way_segs[0])
+    remaining = [list(s) for s in way_segs[1:]]
+    while remaining:
+        last_node = result[-1]
+        matched = False
+        for i, seg in enumerate(remaining):
+            if seg[0] == last_node:
+                result.extend(seg[1:])
+                remaining.pop(i)
+                matched = True
+                break
+            elif seg[-1] == last_node:
+                result.extend(list(reversed(seg))[1:])
+                remaining.pop(i)
+                matched = True
+                break
+        if not matched:
+            # Disconnected segment — append as-is and continue
+            result.extend(remaining.pop(0))
+    return result
+
+
 def _osm_response_to_footprints(
     data: dict,
     tile_centre_lat: float,
@@ -223,55 +262,46 @@ def _osm_response_to_footprints(
     """
     Convert an Overpass JSON response into BuildingFootprint objects.
 
-    The response contains 'nodes' (id -> lat/lon) and 'ways' (id -> node refs).
-    We reconstruct each way's polygon from its nodes.
+    Handles both way elements (simple buildings) and relation elements
+    (multipolygon buildings such as apartment blocks and shopping centres).
     """
-    # Build node lookup: id -> (lat, lon)
+    elements = data.get("elements", [])
+
+    # Pass 1: build node and way lookups
     nodes: dict[int, tuple[float, float]] = {}
-    for elem in data.get("elements", []):
+    way_node_refs: dict[int, list[int]] = {}  # way_id -> ordered node IDs
+    for elem in elements:
         if elem["type"] == "node":
             nodes[elem["id"]] = (elem["lat"], elem["lon"])
+        elif elem["type"] == "way":
+            way_node_refs[elem["id"]] = elem.get("nodes", [])
 
-    footprints: list[BuildingFootprint] = []
-    for elem in data.get("elements", []):
-        if elem["type"] != "way":
-            continue
-
-        tags = elem.get("tags", {})
-        if "building" not in tags:
-            continue
-
-        refs = elem.get("nodes", [])
-        if len(refs) < 4:
-            continue
-
-        # Reconstruct polygon as [lon, lat] pairs (GeoJSON order)
+    def _build_footprint(
+        elem_id: str,
+        tags: dict,
+        node_refs: list[int],
+    ) -> "BuildingFootprint | None":
+        """Shared helper: node refs -> BuildingFootprint or None."""
         poly_latlon = []
-        for node_id in refs:
+        for node_id in node_refs:
             if node_id in nodes:
                 lat, lon = nodes[node_id]
                 poly_latlon.append([lon, lat])
-
         if len(poly_latlon) < 3:
-            continue
-
+            return None
         area = _polygon_area_m2(poly_latlon)
-        if area < 10:  # discard tiny slivers (< 10 m²)
-            continue
-
+        if area < 10:
+            return None
         pixel_poly = _project_polygon(
             poly_latlon, tile_centre_lat, tile_centre_lon, zoom, tile_size
         )
-
-        # Extract building:levels as int if present
         levels_raw = tags.get("building:levels")
         try:
             levels = int(levels_raw) if levels_raw is not None else None
         except (ValueError, TypeError):
             levels = None
-
-        footprints.append(BuildingFootprint(
-            building_id=str(elem["id"]),
+        return BuildingFootprint(
+            building_id=elem_id,
             area_m2=round(area, 1),
             polygon_latlon=poly_latlon,
             polygon=pixel_poly,
@@ -281,15 +311,97 @@ def _osm_response_to_footprints(
             roof_material=tags.get("roof:material") or None,
             roof_colour=tags.get("roof:colour") or None,
             roof_shape=tags.get("roof:shape") or None,
-        ))
+        )
+
+    footprints: list[BuildingFootprint] = []
+
+    # Pass 2: simple way buildings
+    for elem in elements:
+        if elem["type"] != "way":
+            continue
+        tags = elem.get("tags", {})
+        if "building" not in tags:
+            continue
+        refs = elem.get("nodes", [])
+        if len(refs) < 4:
+            continue
+        fp = _build_footprint(str(elem["id"]), tags, refs)
+        if fp:
+            footprints.append(fp)
+
+    # Pass 3: relation buildings (multipolygon — outer member ways form the footprint)
+    for elem in elements:
+        if elem["type"] != "relation":
+            continue
+        tags = elem.get("tags", {})
+        if "building" not in tags:
+            continue
+
+        outer_refs: list[list[int]] = []
+        for member in elem.get("members", []):
+            if member.get("role") == "outer" and member.get("type") == "way":
+                way_id = member["ref"]
+                refs = way_node_refs.get(way_id, [])
+                if refs:
+                    outer_refs.append(refs)
+
+        if not outer_refs:
+            continue
+
+        chained = _chain_way_node_refs(outer_refs)
+        fp = _build_footprint(f"r{elem['id']}", tags, chained)
+        if fp:
+            footprints.append(fp)
+            logger.debug("Relation building r%s: %.0f m²", elem["id"], fp.area_m2)
 
     return footprints
 
 
-# ── Local GeoJSON source (Microsoft Building Footprints) ─────────────────────
+# ── Local GeoJSON source (VicMap / Microsoft Building Footprints) ─────────────
 
 
-def _load_msft_footprints(
+def _extract_props(props: dict) -> tuple[str | None, int | None, str | None, str | None, str | None, str]:
+    """
+    Extract (building_type, levels, roof_material, roof_colour, roof_shape, source_label)
+    from a GeoJSON feature's properties dict.
+
+    Auto-detects VicMap (UFI key present) vs Microsoft/Overture format.
+    Returns source_label "vicmap" or "msft" for the BuildingFootprint.source field.
+    """
+    if "UFI" in props or "ufi" in props:
+        # VicMap Feature of Interest – Buildings
+        # Key fields: UFI (id), FEATURESUBTYPE (building category), NUM_FLOORS
+        levels_raw = props.get("NUM_FLOORS") or props.get("num_floors")
+        try:
+            levels = int(float(levels_raw)) if levels_raw is not None else None
+        except (ValueError, TypeError):
+            levels = None
+        return (
+            props.get("FEATURESUBTYPE") or props.get("featuresubtype") or None,
+            levels,
+            None,   # VicMap FOI does not carry roof material
+            None,   # VicMap FOI does not carry roof colour
+            None,   # VicMap FOI does not carry roof shape
+            "vicmap",
+        )
+    else:
+        # Microsoft / Overture format
+        levels_raw = props.get("num_floors") or props.get("levels")
+        try:
+            levels = int(levels_raw) if levels_raw is not None else None
+        except (ValueError, TypeError):
+            levels = None
+        return (
+            props.get("class") or props.get("building") or None,
+            levels,
+            props.get("roof_material") or None,
+            props.get("roof_color") or None,
+            props.get("roof_shape") or None,
+            "msft",
+        )
+
+
+def _load_local_footprints(
     local_file: Path,
     south: float,
     west: float,
@@ -303,7 +415,9 @@ def _load_msft_footprints(
     """
     Load building footprints from a local GeoJSON file and filter to bbox.
 
-    Supports both GeoJSON FeatureCollection and line-delimited GeoJSONL.
+    Supports VicMap FOI Buildings (GeoJSON) and Microsoft AU Building Footprints
+    (line-delimited GeoJSONL). Source format is auto-detected per feature.
+    Also handles plain GeoJSON FeatureCollections.
 
     Args:
         local_file: Path to the downloaded GeoJSON/GeoJSONL file.
@@ -317,7 +431,7 @@ def _load_msft_footprints(
     count = 0
 
     with open(local_file, encoding="utf-8") as f:
-        for i, line in enumerate(f):
+        for line in f:
             line = line.strip()
             if not line:
                 continue
@@ -336,38 +450,151 @@ def _load_msft_footprints(
 
             for feat in features:
                 geom = feat.get("geometry", {})
-                if geom.get("type") != "Polygon":
-                    continue
-                coords = geom.get("coordinates", [[]])[0]  # outer ring
-                if not coords or len(coords) < 3:
+                geom_type = geom.get("type")
+
+                # Collect rings: Polygon → one ring; MultiPolygon → all outer rings
+                if geom_type == "Polygon":
+                    rings = [geom.get("coordinates", [[]])[0]]
+                elif geom_type == "MultiPolygon":
+                    rings = [poly[0] for poly in geom.get("coordinates", []) if poly]
+                else:
                     continue
 
-                # Quick bbox check on centroid
-                lons = [c[0] for c in coords]
-                lats = [c[1] for c in coords]
-                c_lon = sum(lons) / len(lons)
-                c_lat = sum(lats) / len(lats)
-                if not (south <= c_lat <= north and west <= c_lon <= east):
-                    continue
+                props = feat.get("properties", {}) or {}
+                bldg_type, levels, roof_mat, roof_col, roof_shp, src = _extract_props(props)
 
-                area = _polygon_area_m2(coords)
-                if area < 10:
-                    continue
-
-                pixel_poly = _project_polygon(
-                    coords, tile_centre_lat, tile_centre_lon, zoom, tile_size
+                # Prefer a stable feature ID over a sequential counter
+                feature_id = (
+                    props.get("UFI") or props.get("ufi")
+                    or props.get("id") or props.get("ID")
+                    or str(count)
                 )
-                footprints.append(BuildingFootprint(
-                    building_id=str(count),
-                    area_m2=round(area, 1),
-                    polygon_latlon=coords,
-                    polygon=pixel_poly,
-                    source="msft",
-                ))
-                count += 1
+
+                for coords in rings:
+                    if not coords or len(coords) < 3:
+                        continue
+
+                    # Quick bbox check on centroid
+                    lons = [c[0] for c in coords]
+                    lats = [c[1] for c in coords]
+                    c_lon = sum(lons) / len(lons)
+                    c_lat = sum(lats) / len(lats)
+                    if not (south <= c_lat <= north and west <= c_lon <= east):
+                        continue
+
+                    area = _polygon_area_m2(coords)
+                    if area < 10:
+                        continue
+
+                    pixel_poly = _project_polygon(
+                        coords, tile_centre_lat, tile_centre_lon, zoom, tile_size
+                    )
+
+                    footprints.append(BuildingFootprint(
+                        building_id=str(feature_id),
+                        area_m2=round(area, 1),
+                        polygon_latlon=coords,
+                        polygon=pixel_poly,
+                        source=src,
+                        building_type=bldg_type,
+                        levels=levels,
+                        roof_material=roof_mat,
+                        roof_colour=roof_col,
+                        roof_shape=roof_shp,
+                    ))
+                    count += 1
 
     logger.info("Loaded %d buildings from local file %s", len(footprints), local_file.name)
     return footprints
+
+
+def _load_shapefile_footprints(
+    local_file: Path,
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    tile_centre_lat: float,
+    tile_centre_lon: float,
+    zoom: int,
+    tile_size: int = DEFAULT_TILE_SIZE,
+) -> list[BuildingFootprint]:
+    """
+    Load building footprints from a Shapefile (.shp) and filter to bbox.
+
+    Uses geopandas for reading; reprojects to EPSG:4326 if needed.
+    Designed for VicMap Buildings (VMBUILDINGS_2D) but handles any
+    polygon Shapefile with building outlines.
+    """
+    import geopandas as gpd
+
+    gdf = gpd.read_file(local_file)
+    if gdf.crs is None or gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs("EPSG:4326")
+
+    # Clip to suburb bbox before iterating
+    gdf = gdf.cx[west:east, south:north]
+    logger.info("Shapefile bbox clip: %d features in suburb bounds", len(gdf))
+
+    footprints: list[BuildingFootprint] = []
+    count = 0
+
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+
+        # Normalise to a flat list of exterior rings (Polygon or MultiPolygon)
+        from shapely.geometry import MultiPolygon, Polygon
+        if isinstance(geom, Polygon):
+            polys = [geom]
+        elif isinstance(geom, MultiPolygon):
+            polys = list(geom.geoms)
+        else:
+            continue
+
+        props = {k: v for k, v in row.items() if k != "geometry"}
+        bldg_type, levels, roof_mat, roof_col, roof_shp, src = _extract_props(props)
+
+        feature_id = (
+            props.get("UFI") or props.get("ufi")
+            or props.get("OBJECTID") or props.get("objectid")
+            or str(count)
+        )
+
+        for poly in polys:
+            coords = [list(c) for c in poly.exterior.coords]  # [[lon, lat], ...]
+            if len(coords) < 3:
+                continue
+
+            area = _polygon_area_m2(coords)
+            if area < 10:
+                continue
+
+            pixel_poly = _project_polygon(
+                coords, tile_centre_lat, tile_centre_lon, zoom, tile_size
+            )
+
+            footprints.append(BuildingFootprint(
+                building_id=str(feature_id),
+                area_m2=round(area, 1),
+                polygon_latlon=coords,
+                polygon=pixel_poly,
+                source="vicmap",
+                building_type=bldg_type,
+                levels=levels,
+                roof_material=roof_mat,
+                roof_colour=roof_col,
+                roof_shape=roof_shp,
+            ))
+            count += 1
+
+    logger.info("Loaded %d buildings from shapefile %s", len(footprints), local_file.name)
+    return footprints
+
+
+# Keep old name as alias so any external callers aren't broken
+_load_msft_footprints = _load_local_footprints
 
 
 # ── Public API ────────────────────────────────────────────────────────────────
@@ -392,7 +619,8 @@ def query_buildings_in_bbox(
 
     Args:
         south/west/north/east: Bounding box in WGS84.
-        local_file: Optional local GeoJSON file (Microsoft AU footprints).
+        local_file: Optional local footprint file — GeoJSON/GeoJSONL (Microsoft AU
+            or VicMap) or Shapefile .shp (VicMap VMBUILDINGS_2D).
         tile_centre_lat/lon: If provided, also populate pixel polygons on
             a tile centred here. Leave None to skip pixel projection.
         zoom/tile_size: Used only when tile_centre_* are set.
@@ -407,9 +635,12 @@ def query_buildings_in_bbox(
         if not local_file.exists():
             raise FileNotFoundError(
                 f"Local footprint file not found: {local_file}\n"
-                "Download from: https://github.com/microsoft/AustraliaBuildingFootprints"
+                "Supported sources:\n"
+                "  VicMap Buildings (SHP): https://datashare.maps.vic.gov.au\n"
+                "  Microsoft AU Footprints (GeoJSONL): https://github.com/microsoft/AustraliaBuildingFootprints"
             )
-        footprints = _load_msft_footprints(
+        loader = _load_shapefile_footprints if local_file.suffix.lower() == ".shp" else _load_local_footprints
+        footprints = loader(
             local_file, south, west, north, east,
             centre_lat, centre_lon, zoom, tile_size,
         )
@@ -450,7 +681,7 @@ def query_buildings_in_tile(
 
     By default, queries the OSM Overpass API (no key, no download required).
     If local_file is provided, reads from that GeoJSON/GeoJSONL file instead
-    (e.g. the Microsoft Australia Building Footprints dataset).
+    (VicMap FOI Buildings or Microsoft Australia Building Footprints).
 
     Args:
         centre_lat/lon: Centre coordinate of the tile.
@@ -468,10 +699,12 @@ def query_buildings_in_tile(
         if not local_file.exists():
             raise FileNotFoundError(
                 f"Local footprint file not found: {local_file}\n"
-                "Download the Microsoft Australia Building Footprints from:\n"
-                "  https://github.com/microsoft/AustraliaBuildingFootprints"
+                "Supported sources:\n"
+                "  VicMap FOI Buildings: https://datashare.maps.vic.gov.au\n"
+                "  Microsoft AU Footprints: https://github.com/microsoft/AustraliaBuildingFootprints"
             )
-        footprints = _load_msft_footprints(
+        loader = _load_shapefile_footprints if local_file.suffix.lower() == ".shp" else _load_local_footprints
+        footprints = loader(
             local_file, south, west, north, east,
             centre_lat, centre_lon, zoom, tile_size,
         )
