@@ -23,8 +23,10 @@ from shared.geo_utils import compute_tile_grid, latlon_to_tile, tile_centre_latl
 from shared.logging_config import setup_logging
 from stage1_segmentation.building_footprint_segmenter import (
     BuildingFootprint,
+    merge_footprints,
     query_buildings_in_bbox,
 )
+from stage1_segmentation.stage1_visualiser import save_visualisation
 from stage1_segmentation.tile_downloader import download_tiles
 
 logger = setup_logging("stage1_pipeline")
@@ -69,6 +71,7 @@ def run_stage1(
     skip_download: bool = False,
     max_tiles: int | None = None,
     footprint_file: Path | None = None,
+    merge_footprint_file: Path | None = None,
 ) -> pd.DataFrame:
     """
     Run the full Stage 1 pipeline for a single suburb.
@@ -76,17 +79,18 @@ def run_stage1(
     Steps:
         1. Look up suburb config (bbox)
         2. Download satellite tiles for visual reference (or skip)
-        3. Query OSM Overpass API once for all buildings in the suburb bbox
-        4. Deduplicate buildings and compute centroid lat/lon
-        5. Aggregate and save results to Parquet
+        3. Query building footprints (OSM and/or local file)
+        4. Aggregate and save results to Parquet
+        5. Generate annotated visualisation PNG
 
     Args:
         suburb_name: Suburb to process (must be in config/suburbs.py).
         zoom: Zoom level for tile download (default 19).
         skip_download: Skip tile download (tiles only used as visual reference).
         max_tiles: Cap tiles downloaded (smoke-test mode).
-        footprint_file: Optional local GeoJSON file (MS AU Building Footprints).
-            If None, queries OSM Overpass API.
+        footprint_file: Use ONLY this local file (SHP/GeoJSON) — skips OSM.
+        merge_footprint_file: Merge this local file WITH OSM. OSM buildings are
+            kept as primary; local buildings not overlapping OSM are added.
 
     Returns:
         DataFrame with columns: suburb, building_id, roof_id, area_m2, lat, lon, source.
@@ -102,9 +106,9 @@ def run_stage1(
 
     # ── Step 1: Download satellite tiles (visual reference) ───────────────
     if skip_download:
-        logger.info("Step 1/3: Skipping tile download (--skip-download).")
+        logger.info("Step 1/4: Skipping tile download (--skip-download).")
     else:
-        logger.info("Step 1/3: Downloading satellite tiles...")
+        logger.info("Step 1/4: Downloading satellite tiles...")
         tile_paths = download_tiles(suburb.name, suburb.bbox, zoom)
         if max_tiles and len(tile_paths) > max_tiles:
             logger.info("Smoke-test: capping at %d/%d tiles.", max_tiles, len(tile_paths))
@@ -112,17 +116,26 @@ def run_stage1(
         logger.info("Downloaded %d tiles.", len(tile_paths))
 
     # ── Step 2: Query building footprints for the whole suburb ────────────
-    source_label = f"local file: {footprint_file.name}" if footprint_file else "OSM Overpass API"
-    logger.info("Step 2/3: Querying building footprints via %s...", source_label)
+    if merge_footprint_file:
+        source_label = f"OSM + {merge_footprint_file.name}"
+    elif footprint_file:
+        source_label = f"local file: {footprint_file.name}"
+    else:
+        source_label = "OSM Overpass API"
+    logger.info("Step 2/4: Querying building footprints via %s...", source_label)
 
     try:
         buildings = query_buildings_in_bbox(
-            south=south,
-            west=west,
-            north=north,
-            east=east,
+            south=south, west=west, north=north, east=east,
             local_file=footprint_file,
         )
+        if merge_footprint_file:
+            logger.info("Merging with local file: %s...", merge_footprint_file.name)
+            secondary = query_buildings_in_bbox(
+                south=south, west=west, north=north, east=east,
+                local_file=merge_footprint_file,
+            )
+            buildings = merge_footprints(buildings, secondary)
     except (RuntimeError, FileNotFoundError) as exc:
         logger.error("Footprint query failed: %s", exc)
         return pd.DataFrame()
@@ -134,7 +147,7 @@ def run_stage1(
     logger.info("Found %d buildings in %s.", len(buildings), suburb_name)
 
     # ── Step 3: Build DataFrame and save ─────────────────────────────────
-    logger.info("Step 3/3: Aggregating results...")
+    logger.info("Step 3/4: Aggregating results...")
 
     rows = []
     for i, bldg in enumerate(tqdm(buildings, desc="Processing buildings")):
@@ -154,6 +167,13 @@ def run_stage1(
     output_path = ensure_dir(OUTPUT_DIR) / f"stage1_{suburb_key}.parquet"
     save_parquet(df, output_path)
     logger.info("Results saved to: %s", output_path)
+
+    # ── Step 4: Visualise ─────────────────────────────────────────────────
+    if not skip_download:
+        logger.info("Step 4/4: Generating annotated visualisation...")
+        img_path = save_visualisation(suburb.name, buildings, zoom)
+        if img_path:
+            logger.info("Annotated image: %s", img_path)
 
     logger.info("=" * 60)
     logger.info("Stage 1 complete for %s.", suburb.name)

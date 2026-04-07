@@ -369,19 +369,19 @@ def _extract_props(props: dict) -> tuple[str | None, int | None, str | None, str
     Returns source_label "vicmap" or "msft" for the BuildingFootprint.source field.
     """
     if "UFI" in props or "ufi" in props:
-        # VicMap Feature of Interest – Buildings
-        # Key fields: UFI (id), FEATURESUBTYPE (building category), NUM_FLOORS
-        levels_raw = props.get("NUM_FLOORS") or props.get("num_floors")
-        try:
-            levels = int(float(levels_raw)) if levels_raw is not None else None
-        except (ValueError, TypeError):
-            levels = None
+        # VicMap Building Polygon
+        # FEATSUBTYP = FEATURE_SUBTYPE (truncated SHP column name)
+        # No floors/roof fields in this dataset
+        building_type = (
+            props.get("FEATSUBTYP") or props.get("FEATURESUBTYPE")
+            or props.get("featuresubtype") or props.get("FTYPE") or None
+        )
         return (
-            props.get("FEATURESUBTYPE") or props.get("featuresubtype") or None,
-            levels,
-            None,   # VicMap FOI does not carry roof material
-            None,   # VicMap FOI does not carry roof colour
-            None,   # VicMap FOI does not carry roof shape
+            building_type,
+            None,   # VicMap BUILDING_POLYGON has no floor count field
+            None,   # VicMap BUILDING_POLYGON has no roof material field
+            None,   # VicMap BUILDING_POLYGON has no roof colour field
+            None,   # VicMap BUILDING_POLYGON has no roof shape field
             "vicmap",
         )
     else:
@@ -557,7 +557,8 @@ def _load_shapefile_footprints(
         bldg_type, levels, roof_mat, roof_col, roof_shp, src = _extract_props(props)
 
         feature_id = (
-            props.get("UFI") or props.get("ufi")
+            props.get("PFI") or props.get("pfi")
+            or props.get("UFI") or props.get("ufi")
             or props.get("OBJECTID") or props.get("objectid")
             or str(count)
         )
@@ -595,6 +596,77 @@ def _load_shapefile_footprints(
 
 # Keep old name as alias so any external callers aren't broken
 _load_msft_footprints = _load_local_footprints
+
+
+# ── Merge helpers ─────────────────────────────────────────────────────────────
+
+
+def merge_footprints(
+    primary: list[BuildingFootprint],
+    secondary: list[BuildingFootprint],
+    iou_threshold: float = 0.3,
+) -> list[BuildingFootprint]:
+    """
+    Merge two building footprint lists, keeping all primary buildings and adding
+    secondary buildings that don't significantly overlap with any primary building.
+
+    Overlap is measured by IoU (intersection-over-union) of the polygon areas.
+    A secondary building is dropped if IoU > iou_threshold with any primary building.
+
+    Args:
+        primary: Base list (e.g. OSM). All entries are kept.
+        secondary: Supplementary list (e.g. VicMap). Only non-overlapping entries added.
+        iou_threshold: IoU above which two buildings are considered duplicates (default 0.3).
+
+    Returns:
+        Merged list: all primary + non-duplicate secondary buildings.
+    """
+    if not secondary:
+        return primary
+    if not primary:
+        return secondary
+
+    # Build shapely polygons for primary buildings (skip invalid)
+    primary_polys: list[sg.Polygon | None] = []
+    for b in primary:
+        try:
+            p = sg.Polygon(b.polygon_latlon)
+            primary_polys.append(p if p.is_valid else p.buffer(0))
+        except Exception:
+            primary_polys.append(None)
+
+    added = 0
+    merged = list(primary)
+    for bldg in secondary:
+        try:
+            sp = sg.Polygon(bldg.polygon_latlon)
+            if not sp.is_valid:
+                sp = sp.buffer(0)
+        except Exception:
+            continue
+
+        duplicate = False
+        for pp in primary_polys:
+            if pp is None or not pp.intersects(sp):
+                continue
+            try:
+                intersection = pp.intersection(sp).area
+                union = pp.union(sp).area
+                if union > 0 and intersection / union > iou_threshold:
+                    duplicate = True
+                    break
+            except Exception:
+                continue
+
+        if not duplicate:
+            merged.append(bldg)
+            added += 1
+
+    logger.info(
+        "Merged footprints: %d primary + %d new from secondary (%d duplicates dropped)",
+        len(primary), added, len(secondary) - added,
+    )
+    return merged
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

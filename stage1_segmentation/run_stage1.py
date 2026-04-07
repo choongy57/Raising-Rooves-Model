@@ -7,6 +7,7 @@ Usage:
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --skip-download
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --max-tiles 10
     python -m stage1_segmentation.run_stage1 --suburb "Richmond" --footprint-file data/raw/footprints/australia.geojson
+    python -m stage1_segmentation.run_stage1 --suburb "Carlton" --merge-footprint-file "data/raw/footprints/gda2020_vicgrid/esrishape/whole_of_dataset/victoria/VMFEAT/BUILDING_POLYGON.shp"
     python -m stage1_segmentation.run_stage1 --list-suburbs
 """
 
@@ -55,9 +56,18 @@ def main():
         type=Path,
         default=None,
         help=(
-            "Optional: path to local GeoJSON footprints file "
-            "(e.g. Microsoft AU Building Footprints). "
-            "If omitted, queries OSM Overpass API."
+            "Use ONLY this local file for footprints (SHP or GeoJSON). "
+            "Skips OSM entirely. For VicMap SHP or Microsoft AU GeoJSONL."
+        ),
+    )
+    parser.add_argument(
+        "--merge-footprint-file",
+        type=Path,
+        default=None,
+        help=(
+            "Merge this local file WITH OSM. OSM buildings are kept as primary; "
+            "buildings in this file that don't overlap OSM are added. "
+            "Use for VicMap BUILDING_POLYGON.shp to fill gaps in OSM coverage."
         ),
     )
     parser.add_argument(
@@ -93,6 +103,7 @@ def main():
             skip_download=args.skip_download,
             max_tiles=args.max_tiles,
             footprint_file=args.footprint_file,
+            merge_footprint_file=args.merge_footprint_file,
         )
         if df.empty:
             logger.warning("No results produced. Check logs for details.")
