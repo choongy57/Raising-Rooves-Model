@@ -11,21 +11,28 @@ Optional local source: Microsoft Australia Building Footprints GeoJSON
 (pass footprint_file= to run_stage1).
 """
 
+import json
+import math
 from pathlib import Path
 
 import pandas as pd
 from tqdm import tqdm
 
-from config.settings import DEFAULT_ZOOM, OUTPUT_DIR, TILES_DIR
+from config.settings import DEFAULT_TILE_SIZE, DEFAULT_ZOOM, OUTPUT_DIR, TILES_DIR
 from config.suburbs import get_suburb
 from shared.file_io import ensure_dir, save_parquet
 from shared.geo_utils import compute_tile_grid, latlon_to_tile, tile_centre_latlon
 from shared.logging_config import setup_logging
+import cv2
+import numpy as np
+
 from stage1_segmentation.building_footprint_segmenter import (
     BuildingFootprint,
+    _latlon_to_pixel,
     merge_footprints,
     query_buildings_in_bbox,
 )
+from stage1_segmentation.roof_classifier import classify_roof
 from stage1_segmentation.stage1_visualiser import save_visualisation
 from stage1_segmentation.tile_downloader import download_tiles
 
@@ -35,10 +42,203 @@ logger = setup_logging("stage1_pipeline")
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
+def _tile_extended_bbox(
+    suburb_bbox: tuple[float, float, float, float],
+    zoom: int,
+    tile_size: int = DEFAULT_TILE_SIZE,
+) -> tuple[float, float, float, float]:
+    """
+    Expand the suburb bbox to match the actual area covered by downloaded tiles.
+
+    Each 640px tile is centred on a standard web-mercator tile, but covers
+    tile_size/256 = 2.5 standard tile widths in each direction. The outermost
+    tiles therefore extend ~75m beyond the suburb bbox corners. Querying only
+    within the suburb bbox leaves buildings in this buffer zone without overlays
+    in the annotated image. This function returns the expanded bbox so the
+    Overpass/shapefile query covers everything visible in the imagery.
+    """
+    south, west, north, east = suburb_bbox
+    tiles = compute_tile_grid(suburb_bbox, zoom)
+    if not tiles:
+        return suburb_bbox
+
+    from stage1_segmentation.stage1_visualiser import _tile_centre_latlon
+    centres = [_tile_centre_latlon(x, y, zoom) for x, y in tiles]
+    lats = [c[0] for c in centres]
+    lons = [c[1] for c in centres]
+    centre_lat = sum(lats) / len(lats)
+
+    C = 40075016.686
+    mpp = C * math.cos(math.radians(centre_lat)) / (2 ** (zoom + 8))
+    half_tile_m = (tile_size / 2) * mpp
+
+    dlat = half_tile_m / 111320.0
+    dlon = half_tile_m / (111320.0 * math.cos(math.radians(centre_lat)))
+
+    return (
+        min(lats) - dlat,
+        min(lons) - dlon,
+        max(lats) + dlat,
+        max(lons) + dlon,
+    )
+
+
+def _classify_buildings_from_tiles(
+    buildings: list[BuildingFootprint],
+    suburb_key: str,
+    zoom: int,
+) -> dict[str, float]:
+    """
+    Run the HSV pixel classifier on buildings that have no roof_material from OSM.
+
+    For each unclassified building:
+      1. Locate the tile containing its centroid
+      2. Load that tile image from disk
+      3. Re-project the building polygon onto that tile
+      4. Build a pixel mask and call classify_roof()
+      5. Write material/colour back onto the BuildingFootprint in-place
+
+    Returns a dict mapping building_id -> classifier confidence (0 if not classified).
+    Only buildings missing roof_material are processed; OSM tags are never overwritten.
+    """
+    tile_dir = TILES_DIR / suburb_key
+    tile_cache: dict[tuple[int, int], np.ndarray | None] = {}
+    confidences: dict[str, float] = {}
+
+    skipped = classified = 0
+
+    for bldg in buildings:
+        # Skip if OSM already has a material tag
+        if bldg.roof_material is not None:
+            confidences[bldg.building_id] = 1.0
+            skipped += 1
+            continue
+
+        if not bldg.polygon_latlon or len(bldg.polygon_latlon) < 3:
+            confidences[bldg.building_id] = 0.0
+            continue
+
+        lons = [c[0] for c in bldg.polygon_latlon]
+        lats = [c[1] for c in bldg.polygon_latlon]
+        centroid_lat = sum(lats) / len(lats)
+        centroid_lon = sum(lons) / len(lons)
+
+        # Find tile containing this building's centroid
+        from shared.geo_utils import latlon_to_tile, tile_centre_latlon as _tcl
+        tx, ty = latlon_to_tile(centroid_lat, centroid_lon, zoom)
+        tile_lat, tile_lon = _tcl(tx, ty, zoom)
+
+        # Load tile image (cached)
+        if (tx, ty) not in tile_cache:
+            tile_path = tile_dir / f"{suburb_key}_{zoom}_{tx}_{ty}.png"
+            if tile_path.exists():
+                img_bgr = cv2.imread(str(tile_path))
+                tile_cache[(tx, ty)] = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB) if img_bgr is not None else None
+            else:
+                tile_cache[(tx, ty)] = None
+
+        tile_img = tile_cache[(tx, ty)]
+        if tile_img is None:
+            confidences[bldg.building_id] = 0.0
+            continue
+
+        h, w = tile_img.shape[:2]
+
+        # Project polygon onto this tile
+        pts = np.array([
+            _latlon_to_pixel(lat, lon, tile_lat, tile_lon, zoom, w)
+            for lon, lat in bldg.polygon_latlon
+        ], dtype=np.int32)
+
+        # Build mask
+        mask_img = np.zeros((h, w), dtype=np.uint8)
+        cv2.fillPoly(mask_img, [pts], 255)
+        mask = mask_img > 0
+
+        if mask.sum() < 5:  # too few pixels to classify reliably
+            confidences[bldg.building_id] = 0.0
+            continue
+
+        result = classify_roof(tile_img, mask, segment_id=int(bldg.building_id.lstrip("r")) if bldg.building_id.lstrip("r").isdigit() else 0)
+        bldg.roof_material = result.material.value
+        bldg.roof_colour = result.colour.value
+        confidences[bldg.building_id] = result.confidence
+        classified += 1
+
+    logger.info(
+        "Pixel classifier: %d classified, %d had OSM tags (skipped), %d total",
+        classified, skipped, len(buildings),
+    )
+    return confidences
+
+
+def _assumed_pitch_deg(
+    building_type: str | None,
+    roof_shape: str | None,
+    levels: int | None,
+) -> float:
+    """
+    Return an assumed roof pitch (degrees) based on available building attributes.
+
+    Priority: explicit roof_shape tag > multi-storey override > building_type lookup.
+    Default is 22.5° — the typical Melbourne suburban gable/hip pitch.
+
+    Used when no DSM is available. Stage 2 should treat this as an assumption
+    and run a sensitivity analysis at 15°, 22.5°, and 30°.
+    """
+    # If OSM has an explicit roof shape, use that directly
+    if roof_shape:
+        shape = roof_shape.lower()
+        if shape == "flat":
+            return 0.0
+        if shape in ("gabled", "hipped", "half-hipped"):
+            return 22.5
+        if shape == "pyramidal":
+            return 25.0
+        if shape == "skillion":
+            return 15.0
+        if shape in ("dome", "onion"):
+            return 30.0
+
+    # Multi-storey buildings (4+ floors) are almost always flat-roofed
+    if levels is not None and levels >= 4:
+        return 0.0
+
+    # Building type lookup
+    _FLAT = 0.0
+    _LOW = 5.0
+    _SHALLOW = 15.0
+    _TYPICAL = 22.5
+    _STEEP = 30.0
+
+    flat_types = {"commercial", "retail", "office", "shop", "supermarket", "hotel",
+                  "hospital", "civic", "public", "service", "transportation"}
+    low_types = {"industrial", "warehouse", "factory", "hangar", "storage",
+                 "sports_hall", "stadium"}
+    shallow_types = {"garage", "carport", "shed", "greenhouse", "roof",
+                     "school", "university", "college", "kindergarten"}
+    steep_types = {"church", "cathedral", "chapel", "temple", "mosque", "synagogue"}
+
+    if building_type:
+        bt = building_type.lower()
+        if bt in flat_types:
+            return _FLAT
+        if bt in low_types:
+            return _LOW
+        if bt in shallow_types:
+            return _SHALLOW
+        if bt in steep_types:
+            return _STEEP
+
+    # Residential types and generic "yes" → typical Melbourne suburban pitch
+    return _TYPICAL
+
+
 def _building_to_row(
     building: BuildingFootprint,
     suburb_name: str,
     idx: int,
+    classifier_confidence: float = 0.0,
 ) -> dict:
     """Convert a BuildingFootprint to a DataFrame-ready dict."""
     lons = [c[0] for c in building.polygon_latlon]
@@ -59,6 +259,8 @@ def _building_to_row(
         "roof_material": building.roof_material,
         "roof_colour": building.roof_colour,
         "roof_shape": building.roof_shape,
+        "pitch_deg": _assumed_pitch_deg(building.building_type, building.roof_shape, building.levels),
+        "classifier_confidence": round(classifier_confidence, 2),
     }
 
 
@@ -93,7 +295,9 @@ def run_stage1(
             kept as primary; local buildings not overlapping OSM are added.
 
     Returns:
-        DataFrame with columns: suburb, building_id, roof_id, area_m2, lat, lon, source.
+        DataFrame with columns: suburb, building_id, roof_id, area_m2, lat, lon, source,
+        building_type, levels, roof_material, roof_colour, roof_shape, pitch_deg,
+        classifier_confidence.
     """
     suburb = get_suburb(suburb_name)
     suburb_key = suburb.name.lower().replace(" ", "_")
@@ -106,14 +310,19 @@ def run_stage1(
 
     # ── Step 1: Download satellite tiles (visual reference) ───────────────
     if skip_download:
-        logger.info("Step 1/4: Skipping tile download (--skip-download).")
+        logger.info("Step 1/6: Skipping tile download (--skip-download).")
     else:
-        logger.info("Step 1/4: Downloading satellite tiles...")
+        logger.info("Step 1/6: Downloading satellite tiles...")
         tile_paths = download_tiles(suburb.name, suburb.bbox, zoom)
         if max_tiles and len(tile_paths) > max_tiles:
             logger.info("Smoke-test: capping at %d/%d tiles.", max_tiles, len(tile_paths))
             tile_paths = tile_paths[:max_tiles]
         logger.info("Downloaded %d tiles.", len(tile_paths))
+
+    # Expand query bbox to match actual tile imagery coverage (~75m beyond suburb bbox)
+    # so buildings visible at the edge of tiles get polygon overlays too.
+    qs, qw, qn, qe = _tile_extended_bbox(suburb.bbox, zoom)
+    logger.info("Query bbox (tile-extended): (%.5f, %.5f) -> (%.5f, %.5f)", qs, qw, qn, qe)
 
     # ── Step 2: Query building footprints for the whole suburb ────────────
     if merge_footprint_file:
@@ -122,17 +331,17 @@ def run_stage1(
         source_label = f"local file: {footprint_file.name}"
     else:
         source_label = "OSM Overpass API"
-    logger.info("Step 2/4: Querying building footprints via %s...", source_label)
+    logger.info("Step 2/6: Querying building footprints via %s...", source_label)
 
     try:
         buildings = query_buildings_in_bbox(
-            south=south, west=west, north=north, east=east,
+            south=qs, west=qw, north=qn, east=qe,
             local_file=footprint_file,
         )
         if merge_footprint_file:
             logger.info("Merging with local file: %s...", merge_footprint_file.name)
             secondary = query_buildings_in_bbox(
-                south=south, west=west, north=north, east=east,
+                south=qs, west=qw, north=qn, east=qe,
                 local_file=merge_footprint_file,
             )
             buildings = merge_footprints(buildings, secondary)
@@ -146,31 +355,55 @@ def run_stage1(
 
     logger.info("Found %d buildings in %s.", len(buildings), suburb_name)
 
-    # ── Step 3: Build DataFrame and save ─────────────────────────────────
-    logger.info("Step 3/4: Aggregating results...")
+    # ── Step 3: Pixel classifier — fill missing roof_material/colour ──────
+    logger.info("Step 3/6: Running pixel classifier for buildings without OSM roof tags...")
+    confidences = _classify_buildings_from_tiles(buildings, suburb_key, zoom)
+
+    # ── Step 4: Build DataFrame ───────────────────────────────────────────
+    logger.info("Step 4/6: Aggregating results...")
 
     rows = []
     for i, bldg in enumerate(tqdm(buildings, desc="Processing buildings")):
-        rows.append(_building_to_row(bldg, suburb.name, i))
+        rows.append(_building_to_row(bldg, suburb.name, i, confidences.get(bldg.building_id, 0.0)))
 
     df = pd.DataFrame(rows)
 
     # Summary stats
     total_area = df["area_m2"].sum()
     mean_area = df["area_m2"].mean()
+    osm_tagged = df["classifier_confidence"].eq(1.0).sum()
+    classifier_tagged = df[(df["classifier_confidence"] > 0) & (df["classifier_confidence"] < 1.0)].shape[0]
     logger.info(
         "Suburb %s: %d buildings | total %.0f m2 | mean %.0f m2/building",
         suburb.name, len(df), total_area, mean_area,
     )
+    logger.info(
+        "Roof material coverage: %d from OSM tags, %d from pixel classifier, %d unclassified",
+        osm_tagged, classifier_tagged, len(df) - osm_tagged - classifier_tagged,
+    )
 
-    # Save
-    output_path = ensure_dir(OUTPUT_DIR) / f"stage1_{suburb_key}.parquet"
-    save_parquet(df, output_path)
-    logger.info("Results saved to: %s", output_path)
+    # ── Step 5: Save Parquet + CSV + polygon sidecar ─────────────────────
+    logger.info("Step 5/6: Saving outputs...")
+    out_dir = ensure_dir(OUTPUT_DIR)
+    parquet_path = out_dir / f"stage1_{suburb_key}.parquet"
+    csv_path = out_dir / f"stage1_{suburb_key}.csv"
+    polygons_path = out_dir / f"stage1_{suburb_key}_polygons.json"
 
-    # ── Step 4: Visualise ─────────────────────────────────────────────────
+    save_parquet(df, parquet_path)
+    df.to_csv(csv_path, index=False)
+    logger.info("Parquet: %s", parquet_path)
+    logger.info("CSV:     %s", csv_path)
+
+    # Polygon sidecar — list of [[lon, lat], ...] in the same row order as the
+    # parquet. Used by tools/extract_pitch.py to clip the DSM per building.
+    polygon_list = [b.polygon_latlon for b in buildings]
+    with open(polygons_path, "w") as fh:
+        json.dump(polygon_list, fh, separators=(",", ":"))
+    logger.info("Polygons sidecar: %s", polygons_path)
+
+    # ── Step 6: Visualise ─────────────────────────────────────────────────
     if not skip_download:
-        logger.info("Step 4/4: Generating annotated visualisation...")
+        logger.info("Step 6/6: Generating annotated visualisation...")
         img_path = save_visualisation(suburb.name, buildings, zoom)
         if img_path:
             logger.info("Annotated image: %s", img_path)

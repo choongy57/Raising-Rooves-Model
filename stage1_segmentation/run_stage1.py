@@ -15,6 +15,7 @@ import argparse
 import sys
 from pathlib import Path
 
+from config.settings import FOOTPRINT_SUPPLEMENT_GEOJSONL, FOOTPRINT_SUPPLEMENT_GPKG
 from config.suburbs import list_suburbs
 from shared.logging_config import setup_logging
 from stage1_segmentation.pipeline import run_stage1
@@ -96,6 +97,22 @@ def main():
     if args.max_tiles:
         logger.info("Smoke-test mode: capping at %d tiles.", args.max_tiles)
 
+    # Auto-detect supplement file if the user didn't pass --merge-footprint-file
+    # or --footprint-file explicitly.  Prefer the pre-built GeoPackage (fast bbox
+    # query) and fall back to the raw GeoJSONL if only that exists.
+    merge_file = args.merge_footprint_file
+    if merge_file is None and args.footprint_file is None:
+        if FOOTPRINT_SUPPLEMENT_GPKG.exists():
+            merge_file = FOOTPRINT_SUPPLEMENT_GPKG
+            logger.info("Auto-using supplement index: %s", merge_file.name)
+        elif FOOTPRINT_SUPPLEMENT_GEOJSONL.exists():
+            merge_file = FOOTPRINT_SUPPLEMENT_GEOJSONL
+            logger.info(
+                "Auto-using supplement GeoJSONL: %s (consider running "
+                "python -m tools.build_footprint_index for a faster index)",
+                merge_file.name,
+            )
+
     try:
         df = run_stage1(
             suburb_name=args.suburb,
@@ -103,7 +120,7 @@ def main():
             skip_download=args.skip_download,
             max_tiles=args.max_tiles,
             footprint_file=args.footprint_file,
-            merge_footprint_file=args.merge_footprint_file,
+            merge_footprint_file=merge_file,
         )
         if df.empty:
             logger.warning("No results produced. Check logs for details.")

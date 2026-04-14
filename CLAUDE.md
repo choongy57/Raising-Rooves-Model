@@ -3,7 +3,7 @@
 ## Project Identity
 Monash University Final Year Project (2026). Builds a data pipeline to model cool roof treatment benefits across Melbourne suburbs.
 
-**Current scope:** Stage 1 (Roof Segmentation) is complete. Stage 2 (Irradiance & Climate Data) is next.
+**Current scope:** Stage 1 (Roof Segmentation) is complete. Stage 2 (Irradiance & Cool Roof Delta) is in progress.
 
 **Team:** Ryan, Seamus, Angus, Flynn, Maggie, Gabrielle. **Supervisor:** Stuart.
 
@@ -45,8 +45,16 @@ python -m stage1_segmentation.run_stage1 --suburb "Richmond" --debug
 python -m stage1_segmentation.run_stage1 --suburb "Richmond" --max-tiles 10  # smoke test
 python -m stage1_segmentation.run_stage1 --list-suburbs                      # list available suburbs
 
-# ── Stage 2: Irradiance & Climate Data (not yet implemented) ──
-# python -m stage2_irradiance.run_stage2 --suburb "Richmond"
+# ── Roof pitch extraction (requires Stage 1 output + a DSM GeoTIFF) ──
+# High-res DSM (recommended): download from https://elevation.fsdf.org.au/ (ELVIS, 1m)
+python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif
+python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif --debug
+# Programmatic 30m fallback (set OPENTOPO_API_KEY in .env first):
+python -m tools.extract_pitch --suburb Clayton --download-cop30
+
+# ── Stage 2: Cool Roof Delta Calculation ──
+python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data/raw/barra/carlton_ghi.csv
+python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data/raw/barra/carlton_ghi.csv --debug
 
 # ── Tests ──
 python -m pytest tests/
@@ -55,24 +63,46 @@ python -m pytest tests/
 ## Stage 1 — Segmentation (COMPLETE)
 Uses **OpenStreetMap building footprints** via the Overpass API — no GPU, no API key, no ML.
 - One Overpass query per suburb bbox (~15s) returns all building polygons
-- Returns polygon vertices (lat/lon), area (m²), OSM building ID per building
-- Satellite tiles (512×512px, zoom 19, TILE_STEP=2) stitch seamlessly — zero seam
-- Output: `data/output/stage1_{suburb}.parquet` with columns: suburb, building_id, roof_id, area_m2, lat, lon, source
-- **Local alternative:** `--footprint-file` → Microsoft Australia Building Footprints GeoJSON
-  - Download: https://github.com/microsoft/AustraliaBuildingFootprints (~845 MB zipped)
-  - Better outer-suburb coverage; same ODbL license
-- **Legacy files** (not used in pipeline, kept for reference): `gemini_segmenter.py`, `solar_api_segmenter.py`, `sam_segmenter.py`
+- Query bbox is tile-extended (~75m buffer) so buildings at suburb edges are included
+- Optional merge with VicMap BUILDING_POLYGON.shp via `--merge-footprint-file`
+- HSV pixel classifier fills `roof_material`/`roof_colour` when OSM has no tags
+- Assumed `pitch_deg` derived from `building_type`, `roof_shape`, and `levels`
+- Output: `data/output/stage1_{suburb}.parquet` + `.csv` with columns:
+  `suburb, building_id, roof_id, area_m2, lat, lon, source, building_type, levels,`
+  `roof_material, roof_colour, roof_shape, pitch_deg, classifier_confidence`
+- Annotated visualisation PNG: `data/output/stage1_{suburb}_annotated.png`
+- **Local footprint options:**
+  - `--footprint-file` — use ONLY a local SHP/GeoJSON (skips OSM)
+  - `--merge-footprint-file` — merge local file WITH OSM (OSM primary, local fills gaps)
+  - VicMap BUILDING_POLYGON.shp recommended for Melbourne; download via DataShare
+- **Legacy files** moved to `stage1_segmentation/_legacy/` — not used in pipeline
 
-## Stage 1 — Known Gaps (next steps)
-1. ~~**OSM roof tags**~~ — DONE. `roof:material`, `roof:colour`, `roof:shape`, `building:levels`, `building_type` now extracted and included in output.
-2. **Roof material fallback** — `roof_classifier.py` exists (HSV-based pixel classifier) but is NOT wired into the pipeline. Should call it when OSM has no `roof:material` tag.
-3. **Building type coverage** — outer suburbs have lower OSM tag coverage; consider Overture Maps if gaps become an issue.
+## Roof Pitch Extraction (COMPLETE — standalone tool)
+`tools/extract_pitch.py` takes Stage 1 output + a DSM GeoTIFF and adds `pitch_deg` per building.
+- **Algorithm:** RANSAC (200 iterations, 0.25 m threshold) → SVD refit on inliers
+- **Outlier removal:** MAD-based Z-spike filter before fitting (removes chimneys/vents)
+- **Outputs:** `stage1_{suburb}_with_pitch.parquet/csv` + `stage1_{suburb}_pitch_map.png`
+- **Pitch flags:** `ok` | `flat` (<5°) | `unrealistic` (>65°) | `too_few_points` | `ransac_failed` | `extraction_failed`
+- **DSM sources:**
+  - 1 m ELVIS (recommended): https://elevation.fsdf.org.au/ — free, registration required
+  - 1 m City of Melbourne DSM: https://data.melbourne.vic.gov.au/ — inner suburbs only
+  - 30 m COP30 (programmatic fallback): set `OPENTOPO_API_KEY` in `.env`
+- **Polygon sidecar:** Stage 1 pipeline now saves `stage1_{suburb}_polygons.json` alongside the parquet; pitch tool reads this for per-building polygon geometry.
 
-## Stage 2 — Irradiance & Climate Data (NOT STARTED)
-- Pull solar irradiance from BARRA2 (BOM, 4km resolution) via OPeNDAP
-- ERA5 as fallback
-- Match per-suburb building data from Stage 1 to nearest climate grid cell
-- Output: irradiance + temperature per suburb per time period
+## Stage 2 — Cool Roof Delta Calculation (IN PROGRESS)
+Joins Stage 1 building data with solar irradiance to compute per-building cool roof benefit.
+- **Input:** Stage 1 parquet + irradiance CSV (`lat, lon, annual_ghi_kwh_m2`)
+- **Spatial join:** each building matched to nearest irradiance grid cell
+- **Physics:** energy saved = GHI × footprint_area × (absorptance_before − 0.20)
+  - `absorptance_before` estimated from `roof_colour` (primary) or `roof_material` (fallback)
+  - `roof_surface_area_m2` = `area_m2` / cos(pitch_rad) — for materials/cost estimates
+- **Output columns (added on top of Stage 1):**
+  `annual_ghi_kwh_m2, absorptance_before, roof_surface_area_m2,`
+  `energy_saved_kwh_yr, co2_saved_kg_yr`
+- Output: `data/output/stage2_{suburb}.parquet` + `.csv`
+- **Irradiance data:** provide a CSV with `lat, lon, annual_ghi_kwh_m2` per grid cell
+  - BARRA2 via OPeNDAP (`BARRA2_THREDDS_BASE` in settings.py) — connector not yet built
+  - Melbourne annual GHI ≈ 1,800–1,900 kWh/m²/yr (use as placeholder if no data yet)
 
 ## Git Workflow
 - **`git add` + `git commit`** only — do NOT `git push` unless Ryan explicitly asks
@@ -103,3 +133,5 @@ When asked to research a topic (e.g., "research roof segmentation datasets"):
 - **Roof materials:** CSR dataset, CSIRO VIC stats (~45-50% metal, ~30% tile)
 - **Climate:** BARRA2 (BOM, 4km resolution) via OPeNDAP, ERA5 fallback
 - **Suburb boundaries:** ABS SA2 shapefiles
+- **LiDAR/DSM (1 m):** ELVIS — https://elevation.fsdf.org.au/ (free, registration required)
+- **DSM fallback (30 m):** OpenTopography COP30 — key `OPENTOPO_API_KEY` in `.env`

@@ -36,6 +36,7 @@ from typing import Optional
 
 import requests
 import shapely.geometry as sg
+from shapely import STRtree
 
 from config.settings import DEFAULT_TILE_SIZE, DEFAULT_ZOOM
 from shared.logging_config import setup_logging
@@ -598,6 +599,90 @@ def _load_shapefile_footprints(
 _load_msft_footprints = _load_local_footprints
 
 
+def _load_gpkg_footprints(
+    gpkg_file: Path,
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    tile_centre_lat: float,
+    tile_centre_lon: float,
+    zoom: int,
+    tile_size: int = DEFAULT_TILE_SIZE,
+) -> list[BuildingFootprint]:
+    """
+    Load building footprints from a GeoPackage using a fast spatial bbox query.
+
+    Requires geopandas. The GeoPackage must have been built by
+    tools/build_footprint_index.py which creates a 'buildings' layer with a
+    spatial index — bbox queries return in ~0.1 s regardless of total file size.
+
+    Args:
+        gpkg_file: Path to the .gpkg file.
+        south/west/north/east: Bounding box to query (EPSG:4326).
+        tile_centre_lat/lon/zoom/tile_size: For pixel polygon projection.
+
+    Returns:
+        List of BuildingFootprint objects within the bbox.
+    """
+    import geopandas as gpd
+    from shapely.geometry import MultiPolygon, Polygon
+
+    # geopandas bbox= uses (minx, miny, maxx, maxy) = (west, south, east, north)
+    gdf = gpd.read_file(str(gpkg_file), layer="buildings", bbox=(west, south, east, north))
+
+    if gdf.empty:
+        logger.info("No buildings found in GeoPackage for this bbox.")
+        return []
+
+    if gdf.crs is not None and gdf.crs.to_epsg() != 4326:
+        gdf = gdf.to_crs("EPSG:4326")
+
+    footprints: list[BuildingFootprint] = []
+    for _, row in gdf.iterrows():
+        geom = row.geometry
+        if geom is None or geom.is_empty:
+            continue
+
+        if isinstance(geom, Polygon):
+            rings = [list(geom.exterior.coords)]
+        elif isinstance(geom, MultiPolygon):
+            rings = [list(p.exterior.coords) for p in geom.geoms]
+        else:
+            continue
+
+        feat_id = str(row.get("feat_id") or "") or None
+        dataset = str(row.get("dataset") or "msft")
+        src = "vicmap" if "vicmap" in dataset.lower() else "msft"
+
+        for coords in rings:
+            coords = [[c[0], c[1]] for c in coords]   # strip Z if present
+            if len(coords) < 3:
+                continue
+            lons = [c[0] for c in coords]
+            lats = [c[1] for c in coords]
+            c_lon = sum(lons) / len(lons)
+            c_lat = sum(lats) / len(lats)
+            if not (south <= c_lat <= north and west <= c_lon <= east):
+                continue
+            area = _polygon_area_m2(coords)
+            if area < 10:
+                continue
+            pixel_poly = _project_polygon(
+                coords, tile_centre_lat, tile_centre_lon, zoom, tile_size
+            )
+            footprints.append(BuildingFootprint(
+                building_id=feat_id or str(len(footprints)),
+                area_m2=round(area, 1),
+                polygon_latlon=coords,
+                polygon=pixel_poly,
+                source=src,
+            ))
+
+    logger.info("GeoPackage bbox query: %d buildings loaded from %s", len(footprints), gpkg_file.name)
+    return footprints
+
+
 # ── Merge helpers ─────────────────────────────────────────────────────────────
 
 
@@ -635,6 +720,15 @@ def merge_footprints(
         except Exception:
             primary_polys.append(None)
 
+    # STRtree over the valid primary polygons for O(N log N) candidate lookup
+    valid_primary = [(i, p) for i, p in enumerate(primary_polys) if p is not None]
+    if valid_primary:
+        _, tree_polys = zip(*valid_primary)
+        primary_tree = STRtree(list(tree_polys))
+    else:
+        primary_tree = None
+        tree_polys = []
+
     added = 0
     merged = list(primary)
     for bldg in secondary:
@@ -646,17 +740,19 @@ def merge_footprints(
             continue
 
         duplicate = False
-        for pp in primary_polys:
-            if pp is None or not pp.intersects(sp):
-                continue
-            try:
-                intersection = pp.intersection(sp).area
-                union = pp.union(sp).area
-                if union > 0 and intersection / union > iou_threshold:
-                    duplicate = True
-                    break
-            except Exception:
-                continue
+        if primary_tree is not None:
+            # query() returns indices into tree_polys (not primary_polys)
+            candidates = primary_tree.query(sp)
+            for idx in candidates:
+                pp = tree_polys[idx]
+                try:
+                    intersection = pp.intersection(sp).area
+                    union = pp.union(sp).area
+                    if union > 0 and intersection / union > iou_threshold:
+                        duplicate = True
+                        break
+                except Exception:
+                    continue
 
         if not duplicate:
             merged.append(bldg)
@@ -708,10 +804,17 @@ def query_buildings_in_bbox(
             raise FileNotFoundError(
                 f"Local footprint file not found: {local_file}\n"
                 "Supported sources:\n"
-                "  VicMap Buildings (SHP): https://datashare.maps.vic.gov.au\n"
-                "  Microsoft AU Footprints (GeoJSONL): https://github.com/microsoft/AustraliaBuildingFootprints"
+                "  GeoPackage index (fastest): python -m tools.build_footprint_index\n"
+                "  VicMap Buildings (SHP):     https://datashare.maps.vic.gov.au\n"
+                "  Microsoft AU (GeoJSONL):    https://github.com/microsoft/AustraliaBuildingFootprints"
             )
-        loader = _load_shapefile_footprints if local_file.suffix.lower() == ".shp" else _load_local_footprints
+        suffix = local_file.suffix.lower()
+        if suffix == ".gpkg":
+            loader = _load_gpkg_footprints
+        elif suffix == ".shp":
+            loader = _load_shapefile_footprints
+        else:
+            loader = _load_local_footprints
         footprints = loader(
             local_file, south, west, north, east,
             centre_lat, centre_lon, zoom, tile_size,

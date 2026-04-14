@@ -76,6 +76,27 @@ ROOF_MATERIAL_PRIORS = {
 CDD_BASE_TEMP = 18.0  # °C — cooling needed above this
 HDD_BASE_TEMP = 18.0  # °C — heating needed below this
 
+# ── Building Footprint Supplement ────────────────────────────────────────────
+
+# Spatially-indexed GeoPackage built once by tools/build_footprint_index.py.
+# When present, Stage 1 automatically merges it with OSM (no extra flags needed).
+# Build it with:  python -m tools.build_footprint_index
+FOOTPRINT_SUPPLEMENT_GPKG = RAW_DIR / "footprints" / "buildings_index.gpkg"
+
+# Fallback: raw GeoJSONL (slower — full linear scan ~23 s per suburb).
+FOOTPRINT_SUPPLEMENT_GEOJSONL = RAW_DIR / "footprints" / "melbourne_overture.geojsonl"
+
+# ── Cool Roof Physics ────────────────────────────────────────────────────────
+
+# Solar absorptance after cool roof coating treatment (target SRI ≥ 78)
+COOL_ROOF_ABSORPTANCE = 0.20
+
+# Victorian grid emissions intensity (kg CO2-e per kWh), AEMO 2023
+GRID_EMISSIONS_FACTOR_KG_KWH = 0.79
+
+# Melbourne annual GHI fallback (kWh/m²/yr) — used when no irradiance file provided
+MELBOURNE_DEFAULT_GHI_KWH_M2_YR = 1850.0
+
 # ── Rate Limiting ────────────────────────────────────────────────────────────
 
 TILE_DOWNLOAD_DELAY = 0.1  # seconds between API calls
