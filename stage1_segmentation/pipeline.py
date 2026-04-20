@@ -264,6 +264,64 @@ def _building_to_row(
     }
 
 
+def _query_pipeline_footprints(
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+    footprint_file: Path | None = None,
+    merge_footprint_file: Path | None = None,
+) -> list[BuildingFootprint]:
+    """Query Stage 1 footprints with a local fallback when OSM is unavailable."""
+    if footprint_file:
+        return query_buildings_in_bbox(
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+            local_file=footprint_file,
+        )
+
+    if not merge_footprint_file:
+        return query_buildings_in_bbox(
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+        )
+
+    try:
+        buildings = query_buildings_in_bbox(
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+        )
+    except RuntimeError as exc:
+        logger.warning(
+            "OSM footprint query failed: %s. Falling back to local footprint file: %s",
+            exc,
+            merge_footprint_file.name,
+        )
+        return query_buildings_in_bbox(
+            south=south,
+            west=west,
+            north=north,
+            east=east,
+            local_file=merge_footprint_file,
+        )
+
+    logger.info("Merging with local file: %s...", merge_footprint_file.name)
+    secondary = query_buildings_in_bbox(
+        south=south,
+        west=west,
+        north=north,
+        east=east,
+        local_file=merge_footprint_file,
+    )
+    return merge_footprints(buildings, secondary)
+
+
 # ── Main pipeline ─────────────────────────────────────────────────────────────
 
 
@@ -334,17 +392,14 @@ def run_stage1(
     logger.info("Step 2/6: Querying building footprints via %s...", source_label)
 
     try:
-        buildings = query_buildings_in_bbox(
-            south=qs, west=qw, north=qn, east=qe,
-            local_file=footprint_file,
+        buildings = _query_pipeline_footprints(
+            south=qs,
+            west=qw,
+            north=qn,
+            east=qe,
+            footprint_file=footprint_file,
+            merge_footprint_file=merge_footprint_file,
         )
-        if merge_footprint_file:
-            logger.info("Merging with local file: %s...", merge_footprint_file.name)
-            secondary = query_buildings_in_bbox(
-                south=qs, west=qw, north=qn, east=qe,
-                local_file=merge_footprint_file,
-            )
-            buildings = merge_footprints(buildings, secondary)
     except (RuntimeError, FileNotFoundError) as exc:
         logger.error("Footprint query failed: %s", exc)
         return pd.DataFrame()

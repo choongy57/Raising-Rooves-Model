@@ -217,7 +217,13 @@ out skel qt;
             return r.json()
         except requests.RequestException as exc:
             if attempt == 3:
-                raise RuntimeError(f"Overpass API failed after 3 attempts: {exc}") from exc
+                response = getattr(exc, "response", None)
+                detail = ""
+                if response is not None and response.text:
+                    detail = f" | response: {response.text[:500].strip()}"
+                raise RuntimeError(
+                    f"Overpass API failed after 3 attempts: {exc}{detail}"
+                ) from exc
             time.sleep(5 * attempt)
     return {}
 

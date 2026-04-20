@@ -142,9 +142,9 @@ python -m stage1_segmentation.run_stage1 --list-suburbs
 ```
 
 Stage 1 auto-detects `data/raw/footprints/buildings_index.gpkg` when it exists
-and uses it as a supplement unless `--footprint-file` is passed. If Overpass is
-blocked or rejects a large query, use `--footprint-file` to run from the local
-index only.
+and uses it as a supplement unless `--footprint-file` is passed. In supplement
+mode, Stage 1 tries OSM first, then falls back to the local index if Overpass is
+blocked or rejects the query. Use `--footprint-file` to skip OSM entirely.
 
 ### Stage 1 Outputs
 
@@ -464,4 +464,3 @@ rather than relying only on the bbox.
 ```bash
 python -m pytest tests/
 ```
-
