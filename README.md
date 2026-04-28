@@ -146,6 +146,30 @@ and uses it as a supplement unless `--footprint-file` is passed. In supplement
 mode, Stage 1 tries OSM first, then falls back to the local index if Overpass is
 blocked or rejects the query. Use `--footprint-file` to skip OSM entirely.
 
+### Experimental Gemini + OSM Roof Assessment
+
+This is an opt-in comparison workflow. It does not replace or modify the normal
+Stage 1 outputs. It reads existing Stage 1 tables, polygon sidecars, and cached
+Google satellite tiles, sends small OSM-outlined building crops to Gemini, and
+writes separate comparison files under `data/output/experiments/`.
+
+```bash
+# Build crop metadata only; no Gemini API call
+python -m tools.run_gemini_osm_experiment --suburb Clayton --max-buildings 5 --dry-run
+
+# Send a small bounded sample to Gemini
+python -m tools.run_gemini_osm_experiment --suburb Clayton --max-buildings 5
+```
+
+Outputs:
+
+- `data/output/experiments/gemini_osm_stage1_{suburb}.jsonl`
+- `data/output/experiments/gemini_osm_stage1_{suburb}.csv`
+
+The Gemini pitch value is a coarse visual estimate only. Use DSM extraction for
+measured pitch wherever DSM coverage exists. The experiment defaults to high
+Gemini media resolution because small roof details are important for this task.
+
 ### Stage 1 Outputs
 
 | File | Contents |
