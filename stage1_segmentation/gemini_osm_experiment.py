@@ -31,6 +31,7 @@ from stage1_segmentation.building_footprint_segmenter import _latlon_to_pixel
 logger = setup_logging("gemini_osm_experiment")
 
 GEMINI_OSM_MODEL = "gemini-2.5-flash"
+EXPERIMENT_VERSION = "gemini_osm_v2_conservative_qa"
 EXPERIMENT_OUTPUT_DIR = OUTPUT_DIR / "experiments"
 DEFAULT_RATE_LIMIT_DELAY_SECONDS = 4.0
 MEDIA_RESOLUTIONS = {
@@ -40,10 +41,47 @@ MEDIA_RESOLUTIONS = {
 }
 
 ROOF_COLOURS = {"white", "light_grey", "dark_grey", "red", "brown", "blue", "green", "other", "unknown"}
-ROOF_MATERIALS = {"metal", "tile", "concrete", "terracotta", "membrane", "solar_panel", "other", "unknown"}
-ROOF_SHAPES = {"flat", "gable", "hip", "skillion", "complex", "unknown"}
+ROOF_MATERIALS = {"metal", "tile", "concrete", "terracotta", "membrane", "solar_panel", "mixed", "other", "unknown"}
+ROOF_SHAPES = {"flat", "gable", "hip", "skillion", "sawtooth", "complex", "mixed", "unknown"}
 PITCH_CLASSES = {"flat", "low", "medium", "steep", "unknown"}
-BOUNDARY_QUALITIES = {"matches_osm", "osm_overhang", "osm_underhang", "osm_shifted", "unclear"}
+BOUNDARY_QUALITIES = {
+    "matches_osm",
+    "osm_overhang",
+    "osm_underhang",
+    "osm_shifted",
+    "multiple_roofs",
+    "partial_roof",
+    "unclear",
+}
+IMAGE_QUALITIES = {"clear", "blurry", "shadowed", "occluded", "mixed", "unknown"}
+MATERIAL_EVIDENCE = {
+    "ribbed_lines",
+    "tile_pattern",
+    "smooth_uniform",
+    "solar_panels",
+    "visual_only",
+    "insufficient",
+}
+PITCH_BASES = {
+    "visible_facets",
+    "ridge_geometry",
+    "shadow_support",
+    "flat_roof_visual",
+    "insufficient",
+    "not_observable",
+}
+QA_ACTIONS = {"accept", "accept_with_warning", "exclude", "needs_manual_review", "needs_dsm"}
+QUALITY_FLAGS = {
+    "tree_cover",
+    "shadow",
+    "blurry",
+    "low_resolution",
+    "solar_panels",
+    "partial_roof",
+    "ambiguous_material",
+    "ambiguous_pitch",
+    "ambiguous_boundary",
+}
 
 
 @dataclass
@@ -62,19 +100,36 @@ class GeminiRoofAssessment:
 
     building_id: str
     roof_visible: bool
+    usable_for_stage1: bool
+    image_quality: str
+    occlusion_fraction: float | None
     boundary_quality: str
+    visible_roof_fraction: float | None
     roof_colour: str
+    roof_colour_confidence: float
     roof_material: str
+    roof_material_confidence: float
+    material_evidence: str
     roof_shape: str
+    roof_shape_confidence: float
+    pitch_observable: bool
     pitch_class: str
+    pitch_confidence: float
     pitch_deg_estimate: float | None
+    pitch_basis: str
+    boundary_confidence: float
     confidence: float
+    qa_score: float
+    qa_action: str
     suggested_boundary_polygon_px: list[list[int]]
+    quality_flags: list[str]
+    evidence: str
     warnings: list[str]
     model: str
     tile: str
     crop_box: tuple[int, int, int, int]
     osm_polygon_crop_px: list[list[int]]
+    experiment_version: str
 
 
 GEMINI_RESPONSE_SCHEMA: dict[str, Any] = {
@@ -84,11 +139,29 @@ GEMINI_RESPONSE_SCHEMA: dict[str, Any] = {
             "type": "boolean",
             "description": "Whether a rooftop is visible inside the red OSM outline.",
         },
+        "usable_for_stage1": {
+            "type": "boolean",
+            "description": "Whether the image evidence is good enough to use Gemini attributes automatically.",
+        },
+        "image_quality": {"type": "string", "enum": sorted(IMAGE_QUALITIES)},
+        "occlusion_fraction": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Estimated footprint fraction hidden by tree cover, shadow, blur, or other obstruction.",
+        },
+        "visible_roof_fraction": {
+            "type": ["number", "null"],
+            "minimum": 0,
+            "maximum": 1,
+            "description": "Estimated fraction of the red polygon that contains visible roof.",
+        },
         "boundary_quality": {
             "type": "string",
             "enum": sorted(BOUNDARY_QUALITIES),
             "description": "How well the red OSM footprint matches the visible roof outline.",
         },
+        "boundary_confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "suggested_boundary_polygon_px": {
             "type": "array",
             "description": "Optional simple roof polygon in crop pixel coordinates.",
@@ -100,9 +173,15 @@ GEMINI_RESPONSE_SCHEMA: dict[str, Any] = {
             },
         },
         "roof_colour": {"type": "string", "enum": sorted(ROOF_COLOURS)},
+        "roof_colour_confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "roof_material": {"type": "string", "enum": sorted(ROOF_MATERIALS)},
+        "roof_material_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "material_evidence": {"type": "string", "enum": sorted(MATERIAL_EVIDENCE)},
         "roof_shape": {"type": "string", "enum": sorted(ROOF_SHAPES)},
+        "roof_shape_confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "pitch_observable": {"type": "boolean"},
         "pitch_class": {"type": "string", "enum": sorted(PITCH_CLASSES)},
+        "pitch_confidence": {"type": "number", "minimum": 0, "maximum": 1},
         "pitch_deg_estimate": {
             "type": ["number", "null"],
             "minimum": 0,
@@ -110,41 +189,118 @@ GEMINI_RESPONSE_SCHEMA: dict[str, Any] = {
             "description": "Coarse visual estimate only; null if not defensible from the image.",
         },
         "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "pitch_basis": {"type": "string", "enum": sorted(PITCH_BASES)},
+        "qa_action": {"type": "string", "enum": sorted(QA_ACTIONS)},
+        "quality_flags": {
+            "type": "array",
+            "items": {"type": "string", "enum": sorted(QUALITY_FLAGS)},
+        },
+        "evidence": {
+            "type": "string",
+            "description": "One short sentence explaining the visible evidence and uncertainty.",
+        },
         "warnings": {"type": "array", "items": {"type": "string"}},
     },
     "required": [
         "roof_visible",
+        "usable_for_stage1",
+        "image_quality",
+        "occlusion_fraction",
+        "visible_roof_fraction",
         "boundary_quality",
+        "boundary_confidence",
         "suggested_boundary_polygon_px",
         "roof_colour",
+        "roof_colour_confidence",
         "roof_material",
+        "roof_material_confidence",
+        "material_evidence",
         "roof_shape",
+        "roof_shape_confidence",
+        "pitch_observable",
         "pitch_class",
+        "pitch_confidence",
         "pitch_deg_estimate",
+        "pitch_basis",
         "confidence",
+        "qa_action",
+        "quality_flags",
+        "evidence",
         "warnings",
     ],
 }
 
 
 PROMPT = """
-You are assessing one Melbourne rooftop from a Google satellite crop.
+You are a conservative roof analyst for Melbourne satellite imagery.
 
-The red outline is the OSM/local building footprint. Analyse only the roof
-inside that red outline. Ignore neighbouring buildings, roads, trees, cars, and
-shadows outside the outline.
+You are given ONE image crop. The red polygon is the OSM/local building
+footprint. Analyse ONLY the rooftop inside the red polygon. Ignore neighbouring
+buildings, roads, trees, cars, carparks, driveways, bare ground, and shadows
+outside the outline.
 
-Return JSON matching the schema. Treat pitch as a coarse visual inference only:
-- flat: 0-5 degrees
-- low: 5-15 degrees
-- medium: 15-30 degrees
-- steep: 30+ degrees
-- unknown: insufficient visible evidence
+Primary rule: if the answer is uncertain, return "unknown" or null and lower
+the relevant confidence. Do not guess and do not invent precise pitch.
 
-Do not invent precision. If roof pitch, material, or boundary is uncertain, set
-the relevant value to "unknown", lower confidence, and add a warning. Use
-"suggested_boundary_polygon_px" only when a simple 4-8 vertex roof outline is
-clearly visible in crop pixel coordinates.
+Tasks:
+1. Decide whether a visible roof exists inside the red polygon.
+2. Estimate visible_roof_fraction: the fraction of the red polygon occupied by
+   visible roof pixels, not trees/shadow/ground.
+3. Assess whether the red polygon matches the visible roof boundary.
+4. Classify roof colour from visible pixels only.
+5. Infer broad material only if visual evidence is strong.
+6. Infer roof shape and pitch class only if visible geometry supports it.
+
+Boundary labels:
+- matches_osm: red polygon closely follows the visible roof/footprint.
+- osm_overhang: red polygon extends materially beyond the visible roof.
+- osm_underhang: visible roof extends materially beyond the red polygon.
+- osm_shifted: red polygon appears offset from the visible roof.
+- multiple_roofs: the red polygon contains more than one visible roof/building part.
+- partial_roof: only part of the roof is visible inside the crop or outline.
+- unclear: trees, shadows, image blur, or occlusion prevent judgement.
+
+Material labels:
+- metal: smooth or corrugated sheet appearance, Colorbond-like, large uniform panels.
+- tile: repeated roof tile texture or residential tiled appearance.
+- concrete: concrete slab or flat commercial roof appearance.
+- terracotta: red/orange clay tile appearance.
+- membrane: flat synthetic membrane roof appearance.
+- solar_panel: visible solar-panel dominated roof section.
+- mixed: multiple materials are visibly present inside the red polygon.
+- other: visible roof but not covered by the labels.
+- unknown: insufficient evidence.
+
+Pitch class:
+- flat: 0-5 degrees.
+- low: 5-15 degrees.
+- medium: 15-30 degrees.
+- steep: 30+ degrees.
+- unknown: not visually defensible.
+
+Important constraints:
+- Nadir satellite imagery cannot reliably measure pitch in degrees.
+- Return pitch_deg_estimate only for clearly flat roofs or very obvious pitched roofs.
+- If roof_shape is unknown, pitch_class should usually be unknown.
+- If pitch is not visually defensible, set pitch_observable false,
+  pitch_class unknown, pitch_deg_estimate null, pitch_basis not_observable or
+  insufficient, and add ambiguous_pitch.
+- For clearly flat commercial roofs, pitch_class may be flat, but
+  pitch_deg_estimate should usually remain null unless the roof is visibly flat.
+- If tree cover, shadow, blur, solar panels, or partial visibility affects the
+  result, add quality_flags and lower confidence.
+- Set usable_for_stage1 false unless boundary_quality is matches_osm, roof is
+  visible, image quality is usable, and at least colour or material has direct
+  visual evidence.
+- qa_action should be accept only for high-confidence, low-warning results.
+  Use accept_with_warning for usable but imperfect results, needs_manual_review
+  for ambiguous boundary/material/visibility, needs_dsm when pitch is the main
+  missing value, and exclude when no roof is visible.
+- Do not use surrounding houses to infer this roof.
+- suggested_boundary_polygon_px is optional. Only return a simple 4-8 vertex
+  polygon when the visible roof outline is clearly separable inside the crop.
+
+Return only JSON matching the schema.
 """
 
 
@@ -295,6 +451,15 @@ def _confidence(value: Any) -> float:
         return 0.0
 
 
+def _fraction(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return None
+
+
 def _pitch_estimate(value: Any) -> float | None:
     if value is None:
         return None
@@ -325,6 +490,62 @@ def _polygon_value(value: Any, width: int, height: int) -> list[list[int]]:
     return vertices if len(vertices) >= 3 else []
 
 
+def _quality_flags(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    flags: list[str] = []
+    for item in value:
+        flag = str(item).strip().lower().replace(" ", "_")
+        if flag in QUALITY_FLAGS and flag not in flags:
+            flags.append(flag)
+    return flags
+
+
+def _compute_qa_score(raw: dict[str, Any], quality_flags: list[str]) -> float:
+    confidences = [
+        _confidence(raw.get("confidence")),
+        _confidence(raw.get("boundary_confidence")),
+        _confidence(raw.get("roof_colour_confidence")),
+        _confidence(raw.get("roof_material_confidence")),
+        _confidence(raw.get("roof_shape_confidence")),
+    ]
+    if bool(raw.get("pitch_observable")):
+        confidences.append(_confidence(raw.get("pitch_confidence")))
+
+    score = sum(confidences) / len(confidences)
+    if _enum_value(raw.get("boundary_quality"), BOUNDARY_QUALITIES, "unclear") != "matches_osm":
+        score -= 0.2
+    if not bool(raw.get("roof_visible", False)):
+        score -= 0.4
+    score -= min(0.3, 0.05 * len(quality_flags))
+    return round(max(0.0, min(1.0, score)), 2)
+
+
+def _qa_action(raw: dict[str, Any], quality_flags: list[str], qa_score: float) -> str:
+    model_action = _enum_value(raw.get("qa_action"), QA_ACTIONS, "needs_manual_review")
+    boundary_quality = _enum_value(raw.get("boundary_quality"), BOUNDARY_QUALITIES, "unclear")
+    pitch_basis = _enum_value(raw.get("pitch_basis"), PITCH_BASES, "not_observable")
+
+    if not bool(raw.get("roof_visible", False)):
+        return "exclude"
+    if boundary_quality != "matches_osm":
+        return "needs_manual_review"
+    if {"tree_cover", "blurry", "partial_roof", "ambiguous_boundary"} & set(quality_flags):
+        return "needs_manual_review"
+    if (
+        _enum_value(raw.get("pitch_class"), PITCH_CLASSES) not in {"flat", "unknown"}
+        or (
+            _enum_value(raw.get("pitch_class"), PITCH_CLASSES) != "unknown"
+            and _pitch_estimate(raw.get("pitch_deg_estimate")) is None
+            and pitch_basis != "flat_roof_visual"
+        )
+    ):
+        return "needs_dsm"
+    if model_action == "accept" and qa_score < 0.8:
+        return "accept_with_warning"
+    return model_action
+
+
 def normalise_assessment(
     building_id: str,
     raw: dict[str, Any],
@@ -336,25 +557,50 @@ def normalise_assessment(
     warnings = raw.get("warnings", [])
     if not isinstance(warnings, list):
         warnings = [str(warnings)]
+    quality_flags = _quality_flags(raw.get("quality_flags"))
+    qa_score = _compute_qa_score(raw, quality_flags)
+    qa_action = _qa_action(raw, quality_flags, qa_score)
+
+    qa_usable = (
+        bool(raw.get("usable_for_stage1", False))
+        and qa_action in {"accept", "accept_with_warning", "needs_dsm"}
+    )
 
     return GeminiRoofAssessment(
         building_id=building_id,
         roof_visible=bool(raw.get("roof_visible", False)),
+        usable_for_stage1=qa_usable,
+        image_quality=_enum_value(raw.get("image_quality"), IMAGE_QUALITIES),
+        occlusion_fraction=_fraction(raw.get("occlusion_fraction")),
         boundary_quality=_enum_value(raw.get("boundary_quality"), BOUNDARY_QUALITIES, "unclear"),
+        visible_roof_fraction=_fraction(raw.get("visible_roof_fraction")),
         roof_colour=_enum_value(raw.get("roof_colour"), ROOF_COLOURS),
+        roof_colour_confidence=_confidence(raw.get("roof_colour_confidence")),
         roof_material=_enum_value(raw.get("roof_material"), ROOF_MATERIALS),
+        roof_material_confidence=_confidence(raw.get("roof_material_confidence")),
+        material_evidence=_enum_value(raw.get("material_evidence"), MATERIAL_EVIDENCE, "insufficient"),
         roof_shape=_enum_value(raw.get("roof_shape"), ROOF_SHAPES),
+        roof_shape_confidence=_confidence(raw.get("roof_shape_confidence")),
+        pitch_observable=bool(raw.get("pitch_observable", False)),
         pitch_class=_enum_value(raw.get("pitch_class"), PITCH_CLASSES),
+        pitch_confidence=_confidence(raw.get("pitch_confidence")),
         pitch_deg_estimate=_pitch_estimate(raw.get("pitch_deg_estimate")),
+        pitch_basis=_enum_value(raw.get("pitch_basis"), PITCH_BASES, "not_observable"),
+        boundary_confidence=_confidence(raw.get("boundary_confidence")),
         confidence=_confidence(raw.get("confidence")),
+        qa_score=qa_score,
+        qa_action=qa_action,
         suggested_boundary_polygon_px=_polygon_value(
             raw.get("suggested_boundary_polygon_px"), width, height
         ),
+        quality_flags=quality_flags,
+        evidence=str(raw.get("evidence", "")),
         warnings=[str(item) for item in warnings],
         model=model,
         tile=crop.tile_path.name,
         crop_box=crop.crop_box,
         osm_polygon_crop_px=crop.osm_polygon_crop_px,
+        experiment_version=EXPERIMENT_VERSION,
     )
 
 
@@ -387,7 +633,7 @@ def assess_crop_with_gemini(
     return normalise_assessment(building_id, raw, crop, model)
 
 
-def _load_completed_building_ids(jsonl_path: Path) -> set[str]:
+def _load_completed_building_ids(jsonl_path: Path, experiment_version: str) -> set[str]:
     if not jsonl_path.exists():
         return set()
 
@@ -396,7 +642,9 @@ def _load_completed_building_ids(jsonl_path: Path) -> set[str]:
         if not line.strip():
             continue
         try:
-            completed.add(str(json.loads(line)["building_id"]))
+            row = json.loads(line)
+            if row.get("experiment_version") == experiment_version:
+                completed.add(str(row["building_id"]))
         except (KeyError, json.JSONDecodeError):
             continue
     return completed
@@ -436,7 +684,7 @@ def run_gemini_osm_experiment(
         jsonl_path.unlink(missing_ok=True)
         csv_path.unlink(missing_ok=True)
 
-    completed = _load_completed_building_ids(jsonl_path)
+    completed = _load_completed_building_ids(jsonl_path, EXPERIMENT_VERSION)
     client = None if dry_run else genai.Client(api_key=GEMINI_API_KEY)
 
     rows: list[dict[str, Any]] = []
@@ -471,19 +719,36 @@ def run_gemini_osm_experiment(
             assessment = GeminiRoofAssessment(
                 building_id=building_id,
                 roof_visible=True,
+                usable_for_stage1=False,
+                image_quality="unknown",
+                occlusion_fraction=None,
                 boundary_quality="unclear",
+                visible_roof_fraction=None,
                 roof_colour="unknown",
+                roof_colour_confidence=0.0,
                 roof_material="unknown",
+                roof_material_confidence=0.0,
+                material_evidence="insufficient",
                 roof_shape="unknown",
+                roof_shape_confidence=0.0,
+                pitch_observable=False,
                 pitch_class="unknown",
+                pitch_confidence=0.0,
                 pitch_deg_estimate=None,
+                pitch_basis="not_observable",
+                boundary_confidence=0.0,
                 confidence=0.0,
+                qa_score=0.0,
+                qa_action="needs_manual_review",
                 suggested_boundary_polygon_px=[],
+                quality_flags=[],
+                evidence="dry_run: Gemini API not called",
                 warnings=["dry_run: Gemini API not called"],
                 model=model,
                 tile=crop.tile_path.name,
                 crop_box=crop.crop_box,
                 osm_polygon_crop_px=crop.osm_polygon_crop_px,
+                experiment_version=EXPERIMENT_VERSION,
             )
         else:
             assert client is not None
@@ -500,6 +765,7 @@ def run_gemini_osm_experiment(
             **asdict(assessment),
             "stage1_roof_material": row.get("roof_material"),
             "stage1_roof_colour": row.get("roof_colour"),
+            "stage1_roof_shape": row.get("roof_shape"),
             "stage1_pitch_deg": row.get("pitch_deg"),
             "row_index": int(row_index),
         }

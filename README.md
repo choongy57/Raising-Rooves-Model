@@ -169,6 +169,9 @@ Outputs:
 The Gemini pitch value is a coarse visual estimate only. Use DSM extraction for
 measured pitch wherever DSM coverage exists. The experiment defaults to high
 Gemini media resolution because small roof details are important for this task.
+Its `qa_action` field is the local safety gate: boundary mismatches route to
+manual review, non-flat visual pitch routes to DSM, and flat/attribute-only
+results may be accepted when confidence and image quality are high.
 
 ### Stage 1 Outputs
 
