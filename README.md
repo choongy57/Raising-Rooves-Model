@@ -330,12 +330,12 @@ and cost estimates.
 
 ## Latest Clayton Validation Snapshot
 
-Latest local run: 2026-04-20.
+Latest local run: 2026-04-29.
 
-Stage 1 was run with the local footprint GeoPackage because Overpass rejected
-the Clayton query. Outputs:
+Stage 1 was run with OSM as the primary source plus the local footprint
+GeoPackage supplement. Outputs:
 
-- `stage1_clayton.csv`: 7,762 buildings
+- `stage1_clayton.csv`: 8,024 buildings
 - `stage1_clayton.parquet`
 - `stage1_clayton_polygons.json`
 - `stage1_clayton_annotated.png`: 12,736 x 12,224 PNG
@@ -344,9 +344,9 @@ Stage 1 validation:
 
 - 0 duplicate `building_id`
 - 0 duplicate `roof_id`
-- 7,397 HSV-classified roofs
-- 365 unclassified roofs
-- Source: `msft` for all rows in this local-only run
+- 7,579 HSV-classified roofs
+- 445 unclassified roofs
+- Source mix: 2,827 `osm` rows and 5,197 `msft` supplement rows
 
 Stage 2 was run without a Clayton irradiance CSV. BARRA2/ERA5 was unavailable,
 so the Melbourne default GHI was used:
@@ -375,6 +375,9 @@ conclusions.
 7. Stage 2 reports reduced absorbed solar energy, not electricity savings.
 8. `--max-tiles` is not a reliable spatial smoke-test cap in the current Stage 1
    pipeline because later steps still use the full tile folder/query extent.
+9. Some footprint sources map large compounds as one building polygon rather
+   than individual roof blocks. Those roofs need a better authoritative source
+   or an explicit computer-vision/manual correction workflow.
 
 ## What Needs To Change For The Final Model
 

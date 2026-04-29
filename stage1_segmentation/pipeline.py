@@ -457,11 +457,10 @@ def run_stage1(
     logger.info("Polygons sidecar: %s", polygons_path)
 
     # ── Step 6: Visualise ─────────────────────────────────────────────────
-    if not skip_download:
-        logger.info("Step 6/6: Generating annotated visualisation...")
-        img_path = save_visualisation(suburb.name, buildings, zoom)
-        if img_path:
-            logger.info("Annotated image: %s", img_path)
+    logger.info("Step 6/6: Generating annotated visualisation...")
+    img_path = save_visualisation(suburb.name, buildings, zoom)
+    if img_path:
+        logger.info("Annotated image: %s", img_path)
 
     logger.info("=" * 60)
     logger.info("Stage 1 complete for %s.", suburb.name)

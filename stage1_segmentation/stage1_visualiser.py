@@ -83,7 +83,7 @@ def _stitch_tiles(suburb_key: str, zoom: int) -> tuple[np.ndarray | None, float,
     Returns (None, 0, 0, 0, 0) if no tiles found.
     """
     tile_dir = TILES_DIR / suburb_key
-    tile_paths = sorted(tile_dir.glob("*.png")) if tile_dir.exists() else []
+    tile_paths = sorted(tile_dir.glob(f"{suburb_key}_{zoom}_*.png")) if tile_dir.exists() else []
     if not tile_paths:
         logger.warning("No tiles found in %s — skipping visualisation.", tile_dir)
         return None, 0.0, 0.0, 0, 0

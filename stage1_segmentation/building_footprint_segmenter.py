@@ -44,8 +44,12 @@ from shared.logging_config import setup_logging
 logger = setup_logging("building_footprint_segmenter")
 
 _OVERPASS_URL = "https://overpass-api.de/api/interpreter"
+_OVERPASS_FALLBACK_URLS = [
+    "https://overpass.kumi.systems/api/interpreter",
+]
 _OVERPASS_TIMEOUT = 30  # seconds
 _REQUEST_TIMEOUT = 45
+_REQUEST_HEADERS = {"User-Agent": "RaisingRooves/0.1 (Monash FYP)"}
 
 
 # ── Dataclasses ───────────────────────────────────────────────────────────────
@@ -164,6 +168,26 @@ def _polygon_area_m2(polygon_latlon: list[list[float]]) -> float:
         return 0.0
 
 
+def _polygon_intersects_bbox(
+    polygon_latlon: list[list[float]],
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+) -> bool:
+    """Return True when a WGS84 polygon intersects the query bbox."""
+    if len(polygon_latlon) < 3:
+        return False
+    try:
+        polygon = sg.Polygon(polygon_latlon)
+        if not polygon.is_valid:
+            polygon = polygon.buffer(0)
+        return bool(polygon.intersects(sg.box(west, south, east, north)))
+    except Exception as exc:
+        logger.debug("Could not intersect polygon with bbox: %s", exc)
+        return False
+
+
 def _project_polygon(
     polygon_latlon: list[list[float]],
     tile_centre_lat: float,
@@ -201,30 +225,37 @@ out body;
 >;
 out skel qt;
 """
-    for attempt in range(1, 4):
-        try:
-            r = requests.post(
-                _OVERPASS_URL,
-                data={"data": query},
-                timeout=_REQUEST_TIMEOUT,
-            )
-            if r.status_code == 429:
-                wait = 10 * attempt
-                logger.warning("Overpass rate-limited -- waiting %ds", wait)
-                time.sleep(wait)
-                continue
-            r.raise_for_status()
-            return r.json()
-        except requests.RequestException as exc:
-            if attempt == 3:
+    errors: list[str] = []
+    for url in [_OVERPASS_URL, *_OVERPASS_FALLBACK_URLS]:
+        for attempt in range(1, 4):
+            try:
+                r = requests.post(
+                    url,
+                    data={"data": query},
+                    timeout=_REQUEST_TIMEOUT,
+                    headers=_REQUEST_HEADERS,
+                )
+                if r.status_code == 429:
+                    wait = 10 * attempt
+                    logger.warning("Overpass rate-limited at %s -- waiting %ds", url, wait)
+                    time.sleep(wait)
+                    continue
+                r.raise_for_status()
+                if url != _OVERPASS_URL:
+                    logger.info("Overpass fallback succeeded via %s", url)
+                return r.json()
+            except requests.RequestException as exc:
                 response = getattr(exc, "response", None)
                 detail = ""
                 if response is not None and response.text:
-                    detail = f" | response: {response.text[:500].strip()}"
-                raise RuntimeError(
-                    f"Overpass API failed after 3 attempts: {exc}{detail}"
-                ) from exc
-            time.sleep(5 * attempt)
+                    detail = f" | response: {response.text[:300].strip()}"
+                errors.append(f"{url}: {exc}{detail}")
+                if attempt < 3:
+                    time.sleep(5 * attempt)
+                    continue
+                break
+    if errors:
+        raise RuntimeError("Overpass API failed: " + " || ".join(errors[-3:]))
     return {}
 
 
@@ -481,12 +512,9 @@ def _load_local_footprints(
                     if not coords or len(coords) < 3:
                         continue
 
-                    # Quick bbox check on centroid
-                    lons = [c[0] for c in coords]
-                    lats = [c[1] for c in coords]
-                    c_lon = sum(lons) / len(lons)
-                    c_lat = sum(lats) / len(lats)
-                    if not (south <= c_lat <= north and west <= c_lon <= east):
+                    # Keep any polygon that intersects the query area. Centroid-only
+                    # filtering drops large edge-crossing buildings visible in tiles.
+                    if not _polygon_intersects_bbox(coords, south, west, north, east):
                         continue
 
                     area = _polygon_area_m2(coords)
@@ -665,11 +693,10 @@ def _load_gpkg_footprints(
             coords = [[c[0], c[1]] for c in coords]   # strip Z if present
             if len(coords) < 3:
                 continue
-            lons = [c[0] for c in coords]
-            lats = [c[1] for c in coords]
-            c_lon = sum(lons) / len(lons)
-            c_lat = sum(lats) / len(lats)
-            if not (south <= c_lat <= north and west <= c_lon <= east):
+            # The GeoPackage bbox read returns features intersecting the bbox,
+            # but a MultiPolygon can contain rings outside it. Filter each ring
+            # by intersection rather than centroid to keep edge buildings.
+            if not _polygon_intersects_bbox(coords, south, west, north, east):
                 continue
             area = _polygon_area_m2(coords)
             if area < 10:
