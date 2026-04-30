@@ -34,6 +34,9 @@ colorlog>=6.8
 gspread>=6.0
 google-auth>=2.0
 
+# Visualisation
+folium>=0.15
+
 # Dev / Testing
 pytest>=7.4
 jupyter>=1.0
