@@ -162,6 +162,16 @@ python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data
 python -m pytest tests/
 ```
 
+### QA Ticket Monitor
+
+```bash
+python -m tools.test_monitor                 # run tests, auto-create tickets
+python -m tools.test_monitor --dry-run       # parse failures only, no sheet writes
+python -m tools.test_monitor --triage-only   # re-triage all open tickets
+python -m tools.test_monitor --list          # print open tickets to console
+python -m tools.test_monitor --debug
+```
+
 ## External APIs And Data Sources
 
 Use this as the quick checklist when Ryan asks "what APIs/data do we use?"
@@ -177,6 +187,7 @@ Use this as the quick checklist when Ryan asks "what APIs/data do we use?"
 | DSM inner-city fallback | City of Melbourne Open Data DSM | Manual download | Useful for inner suburbs |
 | DSM coarse fallback | OpenTopography COP30 | `OPENTOPO_API_KEY` in `.env` | Programmatic fallback |
 | Suburb boundaries | ABS SA2 shapefiles / manual bbox | Manual data prep | Needed for robust coverage |
+| QA ticket tracker | Google Sheets | `GOOGLE_SHEET_ID` + `GWS_CREDS_FILE` in `.env` | Active — `tools/test_monitor.py` |
 
 Never paste API keys into notes, commits, chat, or screenshots.
 
@@ -230,6 +241,41 @@ Important limitation:
 `energy_saved_kwh_yr` currently means reduced absorbed solar energy, not
 building electricity savings. Stage 3 should handle thermal transfer and HVAC
 efficiency.
+
+## QA Ticket Workflow
+
+Tickets live in the `Tickets` tab of the Google Sheet at:
+`https://docs.google.com/spreadsheets/d/1z_eGmxD2i_fewjbLDBB36IMgFKzJ3WyDaQdipnD03_8`
+
+Auth uses `GWS_CREDS_FILE` (the existing `uni-email.json` OAuth2 credential —
+same account as the GWS MCP server). No separate service account is needed.
+
+### Ticket lifecycle
+
+`open` → `triaged` → `in_progress` → `review` → `closed`
+
+Auto-triage (via `tools/triage_agent.py`) assigns:
+
+| Field | How assigned |
+| --- | --- |
+| `stage` | regex match on title/description against module names |
+| `type` | regex match for test_failure / data_quality / logic_bug / performance / config |
+| `priority` | P1 for physics/unit bugs; P2 for test failures; P3 for missing data; P4 for perf |
+
+### Priority rules (P1 = most urgent)
+
+| Priority | Trigger |
+| --- | --- |
+| P1-critical | Physics/unit code: `energy_saved`, `absorptance`, `kWh`, `W/m2`, `epsg` |
+| P2-high | Any pytest `FAILED`/`ERROR`, pipeline crash |
+| P3-medium | Missing data, fallback triggered, NaN values |
+| P4-low | Performance, config, cosmetic |
+
+### When to run the monitor
+
+- Run `python -m tools.test_monitor` before committing any physics or data-join changes.
+- Use `--dry-run` to preview without touching the sheet.
+- Duplicate detection: an identical title with status `open/triaged/in_progress` won't create a second ticket.
 
 ## README Update Rules
 
