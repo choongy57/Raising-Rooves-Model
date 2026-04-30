@@ -98,6 +98,81 @@ def compute_temperature_stats(
     return df
 
 
+def compute_cooling_degree_hours(
+    ds: xr.Dataset,
+    variable: str = "tas",
+    base_temp_c: float = 18.5,
+) -> float:
+    """
+    Compute mean annual Cooling Degree Hours (CDH) from hourly BARRA2 screen temperature.
+
+    BARRA2 tas (near-surface air temperature) is stored in Kelvin.  This
+    function converts to Celsius first, then sums the positive exceedances
+    above the base temperature for every hourly timestep.
+
+        CDH_year = sum(max(0, T_hourly_C - base_temp_c)) for all hours in year
+        result   = mean(CDH_year) across all years in the dataset
+
+    The Australian standard cooling base temperature of 18.5°C is used by
+    default (AS/NZS 4356:2003).
+
+    Args:
+        ds: xarray Dataset containing the temperature variable in Kelvin.
+        variable: Name of the temperature variable (default "tas").
+        base_temp_c: Cooling base temperature in °C (default 18.5).
+
+    Returns:
+        Mean annual CDH in degree-hours, rounded to one decimal place.
+
+    Raises:
+        KeyError: If *variable* is not present in *ds*.
+        ValueError: If the dataset contains no valid (non-NaN) data.
+    """
+    if variable not in ds:
+        raise KeyError(
+            f"Variable '{variable}' not found in dataset. "
+            f"Available variables: {list(ds.data_vars)}"
+        )
+
+    da = ds[variable]
+
+    if da.size == 0:
+        raise ValueError("Dataset contains no timesteps.")
+
+    # Convert from Kelvin to Celsius if the data looks like Kelvin.
+    sample_val = float(da.isel(time=0).values.flat[0])
+    if sample_val > 100:
+        da = da - KELVIN_OFFSET
+        logger.debug(
+            "compute_cooling_degree_hours: converted temperature from Kelvin to Celsius."
+        )
+
+    unique_years = sorted(set(int(y) for y in da["time.year"].values))
+
+    yearly_cdh: list[float] = []
+    for yr in unique_years:
+        mask = da["time.year"] == yr
+        yr_data = da.sel(time=mask).values
+        valid = yr_data[~np.isnan(yr_data)]
+        if len(valid) == 0:
+            logger.warning("No valid temperature values for year %d — skipping.", yr)
+            continue
+        cdh = float(np.sum(np.maximum(0.0, valid - base_temp_c)))
+        yearly_cdh.append(cdh)
+
+    if not yearly_cdh:
+        raise ValueError("No valid annual CDH values could be computed (all NaN).")
+
+    mean_cdh = float(np.mean(yearly_cdh))
+    logger.info(
+        "compute_cooling_degree_hours: mean %.1f CDH/yr (base %.1f°C, %d year(s)).",
+        mean_cdh,
+        base_temp_c,
+        len(yearly_cdh),
+    )
+    return round(mean_cdh, 1)
+
+
 def compute_annual_temperature_summary(monthly_stats: pd.DataFrame) -> dict:
     """
     Compute annual temperature summary from monthly stats.

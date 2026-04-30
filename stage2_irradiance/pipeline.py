@@ -34,6 +34,7 @@ from stage2_irradiance.irradiance_loader import (
     nearest_ghi,
 )
 from stage2_irradiance.irradiance_processor import (
+    compute_annual_ghi_from_hourly,
     compute_annual_irradiance_summary,
     compute_irradiance_stats,
 )
@@ -97,6 +98,21 @@ def run_stage2_climate(
     irradiance_summary = compute_annual_irradiance_summary(irradiance_stats)
     if irradiance_summary:
         logger.info("Annual GHI: %.2f kWh/m²/day", irradiance_summary.get("annual_mean_ghi_kwh_m2_day", 0))
+
+    # When hourly BARRA2 data is available, compute annual GHI directly from
+    # hourly flux values (mean W/m² x 8760 / 1000) rather than the monthly
+    # summary approximation (mean_W x 24 / 1000 per month).  The hourly path
+    # is more accurate because it doesn't assume constant flux across the day.
+    if irradiance_ds is not None and irradiance_var in irradiance_ds:
+        try:
+            hourly_annual_ghi = compute_annual_ghi_from_hourly(irradiance_ds, irradiance_var)
+            logger.info(
+                "Annual GHI from hourly data: %.1f kWh/m²/yr "
+                "(preferred over monthly approximation).",
+                hourly_annual_ghi,
+            )
+        except Exception as e:
+            logger.debug("compute_annual_ghi_from_hourly failed (non-fatal): %s", e)
 
     temperature_stats = compute_temperature_stats(temperature_ds, temperature_var, suburb.name)
     temperature_summary = compute_annual_temperature_summary(temperature_stats)

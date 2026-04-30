@@ -42,13 +42,40 @@ DEFAULT_ZOOM = 19  # ~0.29 m/pixel at Melbourne latitude
 DEFAULT_MAP_TYPE = "satellite"
 
 # ── BARRA2 Climate Data ─────────────────────────────────────────────────────
+#
+# NCI THREDDS OPeNDAP base for BARRA2.
+# Path structure (confirmed from README and live catalog 2026-04-30):
+#   ob53/output/reanalysis/{domain_id}/BOM/ERA5/historical/hres/BARRA-R2/v1/{freq}/{variable_id}/
+# NOTE: the gdata path includes BARRA2/ but the THREDDS catalog does not.
+# Domain: AUS-11 = 11 km BARRA-R2 grid (covers all of Australia).
+#         AUS-04 = BARRA-C2 4 km grid (different product, limited domains).
+# Variable names follow CORDEX/CF conventions — NOT UM/BOM internal names.
+# av_swsfcdown and temp_scrn are the gdata variable *names inside* the file;
+# the *folder/filename* uses rsds and tas respectively.
+#
+# NCI account required. Monash students: register at https://my.nci.org.au
+# and ask your supervisor (Stuart) for project ob53 access.
 
 BARRA2_THREDDS_BASE = "https://thredds.nci.org.au/thredds/dodsC/ob53"
+BARRA2_CATALOG_BASE = "https://thredds.nci.org.au/thredds/catalog/ob53"
+
+# BARRA2_DOMAIN: AUS-11 is the standard BARRA-R2 ~11 km grid.
+BARRA2_DOMAIN = "AUS-11"
+
+# Folder/filename identifiers on THREDDS (CORDEX/CF variable names).
+# The NetCDF variable name *inside* each file may differ — see comments below.
 BARRA2_VARIABLES = {
-    "solar_irradiance": "av_swsfcdown",  # downward shortwave radiation (W/m²)
-    "longwave_radiation": "av_lwsfcdown",  # downward longwave radiation (W/m²)
-    "temperature_2m": "temp_scrn",  # screen-level temperature (K)
-    "precipitation": "accum_prcp",  # accumulated precipitation (mm)
+    # rsds = surface downwelling shortwave radiation flux (W/m²).
+    # NetCDF variable name inside the file: rsds.
+    # Replaces the old 'av_swsfcdown' which is a UM internal name not used on THREDDS.
+    "solar_irradiance": "rsds",
+    # rlds = surface downwelling longwave radiation flux (W/m²).
+    "longwave_radiation": "rlds",
+    # tas = near-surface (2 m) air temperature (K).
+    # Replaces old 'temp_scrn' — same quantity, CORDEX name.
+    "temperature_2m": "tas",
+    # pr = precipitation flux (kg/m²/s).
+    "precipitation": "pr",
 }
 
 # ── ERA5 Fallback ────────────────────────────────────────────────────────────
