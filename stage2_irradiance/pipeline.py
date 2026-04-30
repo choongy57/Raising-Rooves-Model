@@ -11,7 +11,8 @@ Two responsibilities:
 Irradiance source priority:
   a. BARRA2 via OPeNDAP (requires NCI access — connect when available)
   b. CSV file provided via --irradiance-file (lat, lon, annual_ghi_kwh_m2)
-  c. Melbourne default GHI constant (~1850 kWh/m²/yr) — safe placeholder
+  c. NASA POWER REST API (free, no key — ~50 km resolution, cached per suburb)
+  d. Melbourne default GHI constant (~1850 kWh/m²/yr) — last-resort placeholder
 """
 
 from pathlib import Path
@@ -28,6 +29,7 @@ from stage2_irradiance.cool_roof_calculator import calculate_building_benefit
 from stage2_irradiance.era5_fallback import fetch_era5_data
 from stage2_irradiance.irradiance_loader import (
     load_irradiance_csv,
+    load_nasa_power_irradiance,
     make_default_irradiance_df,
     nearest_ghi,
 )
@@ -143,7 +145,8 @@ def run_stage2(
     Irradiance source priority:
       1. BARRA2 via OPeNDAP (if accessible — run_stage2_climate)
       2. CSV file at irradiance_file (lat, lon, annual_ghi_kwh_m2)
-      3. Melbourne default GHI constant (~1850 kWh/m²/yr)
+      3. NASA POWER REST API (free, no key — cached to data/raw/nasa_power/)
+      4. Melbourne default GHI constant (~1850 kWh/m²/yr)
 
     Args:
         suburb_name: Suburb to process (must have a Stage 1 output).
@@ -154,7 +157,8 @@ def run_stage2(
     Returns:
         DataFrame with all Stage 1 columns plus:
         annual_ghi_kwh_m2, absorptance_before, roof_surface_area_m2,
-        energy_incident_kwh_yr, energy_saved_kwh_yr, co2_saved_kg_yr.
+        energy_incident_kwh_yr, energy_saved_kwh_yr, co2_saved_kg_yr,
+        irradiance_source.
     """
     suburb = get_suburb(suburb_name)
     suburb_key = suburb.name.lower().replace(" ", "_")
@@ -176,33 +180,80 @@ def run_stage2(
 
     # ── Step 2: Resolve irradiance data ───────────────────────────────────
     logger.info("Step 2/3: Resolving irradiance data...")
-    annual_ghi_kwh_m2: float | None = None
+    # irradiance_source tracks which fallback was used (written to output)
+    irradiance_source: str = "unknown"
+    irradiance_df: pd.DataFrame | None = None
 
-    # Try BARRA2 first (will fail gracefully without NCI access)
+    # Priority 1: BARRA2/ERA5 via OPeNDAP (requires NCI VPN — fails gracefully)
+    annual_ghi_scalar: float | None = None
     try:
         climate_df = run_stage2_climate(suburb_name, start_year, end_year)
         if not climate_df.empty and "mean_ghi_kwh_m2_day" in climate_df.columns:
             daily_mean = climate_df["mean_ghi_kwh_m2_day"].mean()
-            annual_ghi_kwh_m2 = round(daily_mean * 365, 1)
-            logger.info("Using BARRA2/ERA5 annual GHI: %.0f kWh/m²/yr", annual_ghi_kwh_m2)
+            annual_ghi_scalar = round(daily_mean * 365, 1)
+            irradiance_source = "barra2_era5"
+            logger.info(
+                "Irradiance source: BARRA2/ERA5 — annual GHI %.0f kWh/m²/yr",
+                annual_ghi_scalar,
+            )
     except Exception as e:
         logger.debug("BARRA2/ERA5 not available: %s", e)
 
-    # Fall back to CSV or Melbourne default
-    if annual_ghi_kwh_m2 is None:
+    if annual_ghi_scalar is None:
+        # Priority 2: User-supplied CSV
         if irradiance_file:
+            logger.info("Irradiance source: user CSV — %s", irradiance_file)
             irradiance_df = load_irradiance_csv(irradiance_file)
+            irradiance_source = "csv_file"
         else:
-            irradiance_df = make_default_irradiance_df(suburb.bbox)
+            # Priority 3: NASA POWER (free REST API, cached per suburb)
+            logger.info(
+                "Irradiance source: NASA POWER API (bbox south=%.4f west=%.4f "
+                "north=%.4f east=%.4f).",
+                *suburb.bbox,
+            )
+            south, west, north, east = suburb.bbox
+            nasa_df = load_nasa_power_irradiance(
+                south=south,
+                west=west,
+                north=north,
+                east=east,
+                suburb_key=suburb_key,
+            )
+            if not nasa_df.empty:
+                irradiance_df = nasa_df
+                irradiance_source = "nasa_power"
+                mean_ghi = nasa_df["annual_ghi_kwh_m2"].mean()
+                logger.info(
+                    "NASA POWER: %d grid points, mean annual GHI %.1f kWh/m²/yr.",
+                    len(nasa_df), mean_ghi,
+                )
+            else:
+                # Priority 4: Melbourne default constant (last resort)
+                logger.warning(
+                    "NASA POWER returned no data — falling back to Melbourne "
+                    "default GHI constant (%.0f kWh/m²/yr).",
+                    MELBOURNE_DEFAULT_GHI_KWH_M2_YR,
+                )
+                irradiance_df = make_default_irradiance_df(suburb.bbox)
+                irradiance_source = "melbourne_default"
 
-        # Match each building to nearest grid cell
+    # Assign GHI to each building
+    if annual_ghi_scalar is not None:
+        df["annual_ghi_kwh_m2"] = annual_ghi_scalar
+    else:
         ghi_values = [
             nearest_ghi(row["lat"], row["lon"], irradiance_df)
             for _, row in df.iterrows()
         ]
         df["annual_ghi_kwh_m2"] = ghi_values
-    else:
-        df["annual_ghi_kwh_m2"] = annual_ghi_kwh_m2
+
+    df["irradiance_source"] = irradiance_source
+    logger.info(
+        "GHI assigned to %d buildings (source: %s). "
+        "Mean GHI: %.1f kWh/m²/yr.",
+        len(df), irradiance_source, df["annual_ghi_kwh_m2"].mean(),
+    )
 
     # ── Step 3: Compute cool roof benefit per building ────────────────────
     logger.info("Step 3/3: Computing cool roof delta per building...")
