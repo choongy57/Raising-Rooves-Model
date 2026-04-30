@@ -30,6 +30,10 @@ python-dotenv>=1.0
 tqdm>=4.66
 colorlog>=6.8
 
+# Google Sheets ticket tracker
+gspread>=6.0
+google-auth>=2.0
+
 # Dev / Testing
 pytest>=7.4
 jupyter>=1.0
