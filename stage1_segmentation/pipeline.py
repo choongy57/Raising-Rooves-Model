@@ -105,17 +105,23 @@ def _classify_buildings_from_tiles(
     tile_cache: dict[tuple[int, int], np.ndarray | None] = {}
     confidences: dict[str, float] = {}
 
-    skipped = classified = 0
+    n_osm_tagged = 0
+    n_no_polygon = 0
+    n_no_tile = 0
+    n_degenerate = 0
+    n_too_few_pixels = 0
+    n_classified = 0
 
     for bldg in buildings:
         # Skip if OSM already has a material tag
         if bldg.roof_material is not None:
             confidences[bldg.building_id] = 1.0
-            skipped += 1
+            n_osm_tagged += 1
             continue
 
         if not bldg.polygon_latlon or len(bldg.polygon_latlon) < 3:
             confidences[bldg.building_id] = 0.0
+            n_no_polygon += 1
             continue
 
         lons = [c[0] for c in bldg.polygon_latlon]
@@ -140,15 +146,33 @@ def _classify_buildings_from_tiles(
         tile_img = tile_cache[(tx, ty)]
         if tile_img is None:
             confidences[bldg.building_id] = 0.0
+            n_no_tile += 1
+            logger.debug(
+                "Building %s: centroid tile (%d,%d) not downloaded — skipping classifier",
+                bldg.building_id, tx, ty,
+            )
             continue
 
         h, w = tile_img.shape[:2]
 
-        # Project polygon onto this tile
+        # Project polygon onto this tile — _latlon_to_pixel clamps vertices to
+        # [0, tile_size-1], so a building that projects mostly outside the tile
+        # will collapse to a line or point. Guard against this before masking.
         pts = np.array([
             _latlon_to_pixel(lat, lon, tile_lat, tile_lon, zoom, w)
             for lon, lat in bldg.polygon_latlon
         ], dtype=np.int32)
+
+        # Detect degenerate projection: all x-coords equal or all y-coords equal
+        if pts[:, 0].max() == pts[:, 0].min() or pts[:, 1].max() == pts[:, 1].min():
+            confidences[bldg.building_id] = 0.0
+            n_degenerate += 1
+            logger.debug(
+                "Building %s: polygon projects to a line on tile (%d,%d) — "
+                "building likely lies mostly outside this tile; skipping classifier",
+                bldg.building_id, tx, ty,
+            )
+            continue
 
         # Build mask
         mask_img = np.zeros((h, w), dtype=np.uint8)
@@ -157,17 +181,26 @@ def _classify_buildings_from_tiles(
 
         if mask.sum() < 5:  # too few pixels to classify reliably
             confidences[bldg.building_id] = 0.0
+            n_too_few_pixels += 1
+            logger.debug(
+                "Building %s: only %d pixels inside projected polygon on tile (%d,%d) — "
+                "skipping classifier (building may straddle tile boundary)",
+                bldg.building_id, int(mask.sum()), tx, ty,
+            )
             continue
 
         result = classify_roof(tile_img, mask, segment_id=int(bldg.building_id.lstrip("r")) if bldg.building_id.lstrip("r").isdigit() else 0)
         bldg.roof_material = result.material.value
         bldg.roof_colour = result.colour.value
         confidences[bldg.building_id] = result.confidence
-        classified += 1
+        n_classified += 1
 
     logger.info(
-        "Pixel classifier: %d classified, %d had OSM tags (skipped), %d total",
-        classified, skipped, len(buildings),
+        "Pixel classifier: %d classified | %d had OSM tags (skipped) | "
+        "%d no centroid tile | %d degenerate projection | %d too few pixels | "
+        "%d no polygon | %d total",
+        n_classified, n_osm_tagged, n_no_tile, n_degenerate,
+        n_too_few_pixels, n_no_polygon, len(buildings),
     )
     return confidences
 

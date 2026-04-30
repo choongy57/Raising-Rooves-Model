@@ -353,6 +353,12 @@ def _osm_response_to_footprints(
 
     footprints: list[BuildingFootprint] = []
 
+    # Drop-reason counters — logged at INFO so callers can diagnose missing buildings.
+    n_too_few_nodes = 0
+    n_too_small = 0
+    n_valid_ways = 0
+    n_valid_relations = 0
+
     # Pass 2: simple way buildings
     for elem in elements:
         if elem["type"] != "way":
@@ -362,10 +368,18 @@ def _osm_response_to_footprints(
             continue
         refs = elem.get("nodes", [])
         if len(refs) < 4:
+            n_too_few_nodes += 1
+            logger.debug(
+                "Way %s dropped: only %d node refs (need ≥4)", elem["id"], len(refs)
+            )
             continue
         fp = _build_footprint(str(elem["id"]), tags, refs)
         if fp:
             footprints.append(fp)
+            n_valid_ways += 1
+        else:
+            n_too_small += 1
+            logger.debug("Way %s dropped: area < 10 m²", elem["id"])
 
     # Pass 3: relation buildings (multipolygon — outer member ways form the footprint)
     for elem in elements:
@@ -390,7 +404,17 @@ def _osm_response_to_footprints(
         fp = _build_footprint(f"r{elem['id']}", tags, chained)
         if fp:
             footprints.append(fp)
+            n_valid_relations += 1
             logger.debug("Relation building r%s: %.0f m²", elem["id"], fp.area_m2)
+        else:
+            n_too_small += 1
+            logger.debug("Relation r%s dropped: area < 10 m²", elem["id"])
+
+    logger.info(
+        "OSM footprint parse: %d ways + %d relations kept | "
+        "%d dropped (too few nodes) | %d dropped (area < 10 m²)",
+        n_valid_ways, n_valid_relations, n_too_few_nodes, n_too_small,
+    )
 
     return footprints
 

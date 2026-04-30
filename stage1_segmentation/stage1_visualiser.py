@@ -177,6 +177,9 @@ def _annotate(
     """Draw coloured polygon overlays with area labels onto the canvas."""
     overlay = canvas.copy()
 
+    n_rendered = 0
+    n_off_canvas = 0
+
     for i, bldg in enumerate(buildings):
         if not bldg.polygon_latlon or len(bldg.polygon_latlon) < 3:
             continue
@@ -186,6 +189,18 @@ def _annotate(
             _latlon_to_canvas_px(lat, lon, centre_lat, centre_lon, zoom, canvas_w, canvas_h)
             for lon, lat in bldg.polygon_latlon
         ], dtype=np.int32)
+
+        # Skip buildings whose projected bounding box lies entirely outside the canvas.
+        # cv2.fillPoly clips correctly, but a fully off-canvas building wastes work
+        # and its label would be placed at the canvas edge, not on the building.
+        xs, ys = pts[:, 0], pts[:, 1]
+        if xs.max() < 0 or xs.min() >= canvas_w or ys.max() < 0 or ys.min() >= canvas_h:
+            n_off_canvas += 1
+            logger.debug(
+                "Building %s: polygon projects entirely outside canvas (%dx%d) — skipping annotation",
+                bldg.building_id, canvas_w, canvas_h,
+            )
+            continue
 
         cv2.fillPoly(overlay, [pts], colour)
         cv2.polylines(canvas, [pts], isClosed=True, color=colour, thickness=2)
@@ -200,6 +215,15 @@ def _annotate(
         ty = max(th + 4, min(canvas_h - baseline - 2, cy))
         cv2.rectangle(canvas, (tx - 2, ty - th - 2), (tx + tw + 2, ty + baseline), (0, 0, 0), -1)
         cv2.putText(canvas, label, (tx, ty), font, scale, colour, thick, cv2.LINE_AA)
+        n_rendered += 1
+
+    if n_off_canvas:
+        logger.info(
+            "Annotation: %d buildings rendered, %d skipped (projected entirely off canvas)",
+            n_rendered, n_off_canvas,
+        )
+    else:
+        logger.info("Annotation: %d buildings rendered.", n_rendered)
 
     cv2.addWeighted(overlay, 0.25, canvas, 0.75, 0, canvas)
     return canvas
