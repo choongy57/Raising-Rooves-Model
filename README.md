@@ -10,11 +10,11 @@ Supervisor: Stuart
 
 - Stage 1 roof segmentation: working.
 - Roof pitch extraction from DSM: working as a standalone tool.
-- Stage 2 irradiance and cool roof delta: working, but real BARRA2 access still
-  needs to be finalised.
-- Stage 3 thermal modelling: planned.
+- Stage 2 irradiance and cool roof delta: working. NASA POWER provides real GHI
+  automatically (no key needed) as the first fallback when BARRA2 is unavailable.
+- Stage 3 thermal modelling: working.
 - Persistence: no application database. Outputs are CSV, Parquet, JSON, PNG,
-  and cached raw files under `data/`.
+  HTML, and cached raw files under `data/`.
 
 Important note: `data/raw/footprints/buildings_index.gpkg` is a generated
 GeoPackage spatial index used for fast local footprint lookup. It is not the
@@ -29,13 +29,12 @@ For a configured Melbourne suburb, the pipeline:
 3. Queries building footprints from OpenStreetMap and/or local footprint data.
 4. Classifies roof colour/material from satellite pixels where tags are missing.
 5. Assigns roof pitch from assumptions, or uses the standalone DSM pitch tool.
-6. Joins buildings to annual solar irradiance.
+6. Joins buildings to annual solar irradiance (NASA POWER, user CSV, or BARRA2).
 7. Estimates per-building reduction in absorbed solar energy from a cool roof
    treatment.
-
-Current Stage 2 output is not final electricity savings. It is reduced absorbed
-solar radiation at the roof. Translating that into cooling electricity savings
-requires Stage 3 thermal modelling.
+8. Converts absorbed solar reduction to cooling electricity savings via thermal
+   model (Stage 3).
+9. Produces interactive map, summary charts, and HTML report (visualise_results).
 
 ## Data Flow
 
@@ -63,14 +62,29 @@ Optional pitch improvement
         |
         v
 Stage 2: irradiance + cool roof delta
-  try BARRA2/ERA5 climate path
-  else load irradiance CSV
-  else use Melbourne default GHI
+  try BARRA2 → user CSV → NASA POWER → Melbourne default GHI
   calculate energy/co2 reduction
         |
         v
 data/output/stage2_{suburb}.parquet
 data/output/stage2_{suburb}.csv
+        |
+        v
+Stage 3: thermal model
+  absorbed solar delta → heat conducted → cooling load → electricity saved
+        |
+        v
+data/output/stage3_{suburb}.parquet
+data/output/stage3_{suburb}.csv
+        |
+        v
+tools.visualise_results
+  choropleth map, summary charts, HTML report
+        |
+        v
+data/output/stage2_{suburb}_map.html
+data/output/stage2_{suburb}_summary.png
+data/output/stage2_{suburb}_report.html
 ```
 
 ## Data Needed
@@ -230,14 +244,22 @@ Use this after Stage 1 when a DSM GeoTIFF is available.
 ```bash
 python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif
 python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif --debug
+
+# Validate and import a manually downloaded ELVIS DSM
+python -m tools.extract_pitch --suburb Clayton --import-dsm ~/Downloads/clayton_dsm.tif
+
+# Download coarse COP30 fallback (30 m resolution — unreliable for individual buildings)
 python -m tools.extract_pitch --suburb Clayton --download-cop30
 ```
 
 Recommended DSM source:
 
-- ELVIS 1 m LiDAR for most suburbs.
+- ELVIS 1 m LiDAR for most suburbs. ELVIS has no programmatic API — draw your
+  bbox at elevation.fsdf.org.au, submit the form, and receive a download link by
+  email. Use `--import-dsm` to validate and register the downloaded file.
 - City of Melbourne DSM for inner-city coverage.
-- OpenTopography COP30 only as a coarse fallback.
+- OpenTopography COP30 only as a coarse fallback. At 30 m resolution, individual
+  building pitches are unreliable; use only for suburb-level sanity checks.
 
 The pitch tool uses RANSAC and SVD plane fitting over DSM points inside each
 building polygon. It writes `stage1_{suburb}_with_pitch.parquet/csv` and a pitch
@@ -246,7 +268,8 @@ map PNG.
 ## Running Stage 2
 
 ```bash
-# Uses BARRA2/ERA5 if available; otherwise falls back to Melbourne default GHI
+# Uses BARRA2 if available; otherwise NASA POWER (auto, no key needed);
+# otherwise user CSV; otherwise Melbourne default GHI (~1850 kWh/m²/yr)
 python -m stage2_irradiance.run_stage2 --suburb "Clayton"
 
 # Use a prepared irradiance grid CSV
@@ -277,6 +300,73 @@ Stage 2 appends these columns to the Stage 1 table:
 | `energy_saved_kwh_yr` | Reduced absorbed solar energy after cool roof treatment |
 | `co2_saved_kg_yr` | CO2 avoided using the configured grid emissions factor |
 
+## Running Stage 3
+
+Stage 3 reads Stage 2 output and applies a thermal physics chain to produce
+per-building cooling electricity savings.
+
+```bash
+python -m stage3_thermal.run_stage3 --suburb "Carlton"
+python -m stage3_thermal.run_stage3 --suburb "Carlton" --debug
+```
+
+Prerequisites: Stage 2 output must exist (`data/output/stage2_{suburb}.parquet`).
+
+### Stage 3 Outputs
+
+Stage 3 appends these columns to the Stage 2 table:
+
+| Column | Description |
+| --- | --- |
+| `heat_to_interior_kwh_yr` | Solar heat conducted through roof to building interior |
+| `cooling_load_reduction_kwh_yr` | Reduction in cooling load (subset of heat to interior) |
+| `electricity_saved_kwh_yr` | Actual cooling electricity saved (after HVAC COP) |
+| `co2_electricity_saved_kg_yr` | CO2 avoided from the electricity saving |
+
+Output files:
+
+- `data/output/stage3_{suburb}.parquet`
+- `data/output/stage3_{suburb}.csv`
+
+### Stage 3 Thermal Parameters
+
+| Parameter | Value | Description |
+| --- | --- | --- |
+| Roof thermal resistance | R2.5 | Typical uninsulated Australian tile roof |
+| Heat transfer fraction | 0.65 (residential), 0.40 (4+ storeys) | Fraction of absorbed solar conducted to interior |
+| Cooling fraction | 0.70 | Fraction of interior heat gain driving active cooling |
+| HVAC COP | 3.0 (residential), 4.0 (commercial) | Split system / VRF baseline |
+
+As a result, `electricity_saved_kwh_yr` is approximately 13–22% of
+`energy_saved_kwh_yr` from Stage 2.
+
+## Visualisation
+
+Produces an interactive map, summary charts, and HTML report from Stage 2 output.
+
+```bash
+python -m tools.visualise_results --suburb "Carlton"
+python -m tools.visualise_results --suburb "Carlton" --debug
+```
+
+Outputs written to `data/output/`:
+
+| File | Description |
+| --- | --- |
+| `stage2_{suburb}_map.html` | Interactive choropleth — building polygons coloured by energy saved |
+| `stage2_{suburb}_summary.png` | 2×2 chart panel (distribution, by material, counts, summary stats) |
+| `stage2_{suburb}_report.html` | HTML report with KPI tiles, embedded chart, and map link |
+
+## Running The Full Pipeline
+
+```bash
+python -m stage1_segmentation.run_stage1 --suburb Carlton \
+  --merge-footprint-file data/raw/footprints/buildings_index.gpkg
+python -m stage2_irradiance.run_stage2 --suburb Carlton
+python -m stage3_thermal.run_stage3 --suburb Carlton
+python -m tools.visualise_results --suburb Carlton
+```
+
 ## BARRA2 And Grid Handling
 
 There is no fixed 12 by 12 grid assumption in the code.
@@ -285,11 +375,12 @@ Current behaviour:
 
 - Direct BARRA2/ERA5 path samples the nearest climate point to the suburb
   centroid and applies that scalar to all buildings.
+- NASA POWER (auto-fetched fallback): samples a grid across the suburb bbox at
+  0.1° spacing and caches results under `data/raw/nasa_power/`. At ~50 km
+  resolution, most Melbourne suburbs will return one or a few data points.
 - CSV irradiance input accepts any number of rows.
 - Building centroids are matched to the nearest CSV row using latitude/longitude
   distance.
-- A 12 by 12 CSV would be accepted as 144 points, but the code does not treat it
-  as a structured raster.
 
 BARRA2 is roughly 4 km resolution. Clayton's configured bbox is smaller than a
 single 4 km cell in each direction, so raw BARRA2 may only produce one or a few
@@ -328,6 +419,20 @@ co2_saved            = energy_saved * 0.79 kg/kWh
 horizontal irradiance. Roof surface area is still useful for material quantity
 and cost estimates.
 
+## QA Ticket System
+
+Test failures are automatically triaged and written to a Google Sheet as
+structured tickets.
+
+```bash
+python -m tools.test_monitor              # run tests, auto-create tickets for failures
+python -m tools.test_monitor --dry-run    # parse without writing to sheet
+python -m tools.test_monitor --list       # print open tickets
+python -m tools.test_monitor --triage-only
+```
+
+Requires `GOOGLE_SHEET_ID` and `GWS_CREDS_FILE` in `.env`.
+
 ## Latest Clayton Validation Snapshot
 
 Latest local run: 2026-04-29.
@@ -348,12 +453,10 @@ Stage 1 validation:
 - 445 unclassified roofs
 - Source mix: 2,827 `osm` rows and 5,197 `msft` supplement rows
 
-Stage 2 was run without a Clayton irradiance CSV. BARRA2/ERA5 was unavailable,
-so the Melbourne default GHI was used:
-
-```text
-annual_ghi_kwh_m2 = 1850.0
-```
+Stage 2 was run without a Clayton irradiance CSV. BARRA2/ERA5 was unavailable.
+NASA POWER returned a measured GHI for Carlton of approximately 1,646 kWh/m²/yr
+(vs the 1,850 kWh/m²/yr Melbourne default — 11% lower). Results are cached
+under `data/raw/nasa_power/`.
 
 Outputs:
 
@@ -372,7 +475,9 @@ conclusions.
 4. HSV roof classification is heuristic and should be validated.
 5. Assumed pitch should be replaced with DSM-derived pitch where possible.
 6. BARRA2/ERA5 access is not yet reliable in the current pipeline.
-7. Stage 2 reports reduced absorbed solar energy, not electricity savings.
+7. Stage 3 thermal parameters (R-value, COP, heat transfer fraction) are
+   Melbourne residential defaults. Commercial and high-rise buildings use
+   adjusted values but no per-building insulation data is available.
 8. `--max-tiles` is not a reliable spatial smoke-test cap in the current Stage 1
    pipeline because later steps still use the full tile folder/query extent.
 9. Some footprint sources map large compounds as one building polygon rather
@@ -389,23 +494,17 @@ conclusions.
 - Produce a presentation annotation that highlights in-boundary buildings and
   mutes or hides buffer buildings.
 - Use measured DSM pitch for final suburbs.
-- Prepare or connect real irradiance data.
+- Connect real annual GHI from BARRA2 when NCI access is available.
 
 ### Medium Priority
 
+- Replace assumed pitch with measured DSM pitch for final suburbs.
+- Validate absorptance lookup against local building stock data.
+- Add true suburb polygon boundaries (ABS SA2).
+- Expand to 3+ suburbs for comparison.
 - Improve and validate roof material classification.
 - Add output summaries by suburb and roof class.
 - Add tests around boundary filtering, unit conversions, and irradiance matching.
-
-### Next Stage
-
-Build Stage 3 thermal modelling:
-
-- roof insulation / R-value
-- indoor/outdoor temperature difference
-- cooling degree days or hourly temperature
-- HVAC coefficient of performance
-- fraction of absorbed roof heat entering indoor cooling load
 
 ## Data Sources
 
@@ -415,7 +514,8 @@ Build Stage 3 thermal modelling:
 | Building footprints | OpenStreetMap Overpass API | Active but can fail/reject large queries |
 | Local footprint index | GeoPackage built by `tools.build_footprint_index` | Active when present |
 | Footprint supplement | VicMap BUILDING_POLYGON or Overture/Microsoft-style data | Manual download/build |
-| Solar irradiance | BARRA2 via NCI THREDDS/OPeNDAP | Intended source; access/path unresolved |
+| Solar irradiance (primary) | BARRA2 via NCI THREDDS/OPeNDAP | Intended primary; NCI access required |
+| Solar irradiance (auto) | NASA POWER REST API | No key needed; auto-fetched; cached under `data/raw/nasa_power/` |
 | Irradiance fallback | User CSV or Melbourne default GHI | Active |
 | DSM for pitch | ELVIS 1 m LiDAR | Recommended manual download |
 | Inner-city DSM | City of Melbourne Open Data | Manual download |
@@ -433,6 +533,7 @@ Raising Rooves Model/
     raw/
       tiles/
       barra/
+      nasa_power/
       footprints/
     output/
   research/
@@ -460,11 +561,20 @@ Raising Rooves Model/
     era5_fallback.py
     irradiance_loader.py
     irradiance_processor.py
+    nasa_power_client.py
     temperature_processor.py
+  stage3_thermal/
+    pipeline.py
+    run_stage3.py
+    thermal_calculator.py
   tools/
     analyse_coordinate.py
     build_footprint_index.py
     extract_pitch.py
+    visualise_results.py
+    ticket_manager.py
+    triage_agent.py
+    test_monitor.py
   tests/
   AGENTS.md
   CLAUDE.md
