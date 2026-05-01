@@ -62,6 +62,21 @@ def load_irradiance_csv(path: Path) -> pd.DataFrame:
         )
 
     logger.info("Loaded %d irradiance grid cells from %s", len(df), path.name)
+
+    max_ghi = df["annual_ghi_kwh_m2"].max()
+    if max_ghi < 100:
+        logger.warning(
+            "annual_ghi_kwh_m2 max=%.1f looks like daily values (kWh/m²/day). "
+            "Pipeline expects annual kWh/m²/yr — Melbourne is ~1650. Check your CSV units.",
+            max_ghi,
+        )
+    elif max_ghi > 4000:
+        logger.warning(
+            "annual_ghi_kwh_m2 max=%.1f exceeds realistic range for Australia (max ~2500). "
+            "Check your CSV units.",
+            max_ghi,
+        )
+
     return df[["lat", "lon", "annual_ghi_kwh_m2"]].copy()
 
 

@@ -6,8 +6,13 @@ All data persistence goes through these functions.
 """
 
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
+
+from shared.logging_config import setup_logging
+
+logger = setup_logging("file_io")
 
 
 def ensure_dir(path: Path) -> Path:
@@ -81,3 +86,40 @@ def load_csv(path: Path) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"CSV file not found: {path}")
     return pd.read_csv(path)
+
+
+def save_stage_outputs(
+    df: pd.DataFrame,
+    stage: int,
+    suburb_key: str,
+) -> tuple[Path, Path]:
+    """
+    Save stage outputs as parquet + CSV to OUTPUT_DIR.
+
+    Returns (parquet_path, csv_path).
+    """
+    from config.settings import OUTPUT_DIR
+    parquet_path = OUTPUT_DIR / f"stage{stage}_{suburb_key}.parquet"
+    csv_path = OUTPUT_DIR / f"stage{stage}_{suburb_key}.csv"
+    ensure_dir(OUTPUT_DIR)
+    save_parquet(df, parquet_path)
+    df.to_csv(csv_path, index=False)
+    logger.info("Saved %s and %s", parquet_path.name, csv_path.name)
+    return parquet_path, csv_path
+
+
+def load_stage_input(stage: int, suburb_key: str) -> Optional[pd.DataFrame]:
+    """
+    Load stage N output parquet for a suburb.
+
+    Returns None (with an error log) if the file does not exist.
+    """
+    from config.settings import OUTPUT_DIR
+    path = OUTPUT_DIR / f"stage{stage}_{suburb_key}.parquet"
+    if not path.exists():
+        logger.error(
+            "Stage %d output not found: %s — run Stage %d first.",
+            stage, path, stage,
+        )
+        return None
+    return pd.read_parquet(path)

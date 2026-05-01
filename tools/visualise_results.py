@@ -638,7 +638,8 @@ def main(argv: list[str] | None = None) -> None:
         logger.debug("Debug logging enabled.")
 
     suburb_name = args.suburb.strip().title()
-    suburb_key = suburb_name.lower().replace(" ", "_")
+    from config.suburbs import get_suburb
+    suburb_key = get_suburb(suburb_name).key
 
     logger.info("=== Visualise Results: %s ===", suburb_name)
 

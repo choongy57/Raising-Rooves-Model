@@ -19,6 +19,11 @@ class Suburb:
     bbox: tuple[float, float, float, float]  # (south, west, north, east)
     zone_type: str  # "residential", "industrial", "commercial", "mixed"
 
+    @property
+    def key(self) -> str:
+        """Normalised slug used in filenames and directory names."""
+        return self.name.lower().replace(" ", "_")
+
 
 # ── Test Suburbs ─────────────────────────────────────────────────────────────
 # Chosen to cover different zone types, distances from CBD, and roof profiles.

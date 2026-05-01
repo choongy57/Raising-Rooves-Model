@@ -125,6 +125,33 @@ GRID_EMISSIONS_FACTOR_KG_KWH = 0.79
 # Melbourne annual GHI fallback (kWh/m²/yr) — used when no irradiance file provided
 MELBOURNE_DEFAULT_GHI_KWH_M2_YR = 1850.0
 
+# ── Stage 3 Thermal Physics ───────────────────────────────────────────────────
+# Centralised here so sensitivity analysis can vary them without editing source.
+
+# Fraction of absorbed roof heat that conducts to the building interior.
+# The rest is re-radiated or convected away at the roof surface.
+# Source: AS 4859.1 roof-assembly modelling; CSIRO "Cool Roofs for Australian
+# Homes" (2012, p. 14).
+HEAT_TRANSFER_FRACTION = 0.65
+
+# Reduced transfer fraction for 4+ storey buildings — additional concrete floors
+# and structural thermal mass attenuate the heat path to occupied spaces.
+# Conservative estimate; published literature range 0.30–0.50.
+HEAT_TRANSFER_FRACTION_MULTISTOREY = 0.40
+
+# Fraction of interior heat gain from the roof that drives active cooling demand.
+# The remainder is offset by natural ventilation, thermal mass buffering, or night
+# purging. Based on NatHERS 6-star house modelling for Melbourne climate.
+COOLING_FRACTION = 0.70
+
+# COP for typical residential split-system AC at Melbourne summer conditions.
+# GEMS Determination 2019 minimum for a 3.5 kW unit.
+HVAC_COP_RESIDENTIAL = 3.0
+
+# COP for commercial/office buildings with VRF or central chiller plant.
+# AIRAH DA19 commercial baseline for Melbourne office stock.
+HVAC_COP_COMMERCIAL = 4.0
+
 # ── Rate Limiting ────────────────────────────────────────────────────────────
 
 TILE_DOWNLOAD_DELAY = 0.1  # seconds between API calls

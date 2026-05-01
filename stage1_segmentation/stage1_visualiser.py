@@ -248,7 +248,8 @@ def save_visualisation(
         buildings: BuildingFootprint list from the segmentation step.
         zoom: Zoom level used when tiles were downloaded.
     """
-    suburb_key = suburb_name.lower().replace(" ", "_")
+    from config.suburbs import get_suburb
+    suburb_key = get_suburb(suburb_name).key
     canvas, centre_lat, centre_lon, canvas_w, canvas_h = _stitch_tiles(suburb_key, zoom)
     if canvas is None:
         return None

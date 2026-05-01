@@ -395,7 +395,7 @@ def run_stage1(
         classifier_confidence.
     """
     suburb = get_suburb(suburb_name)
-    suburb_key = suburb.name.lower().replace(" ", "_")
+    suburb_key = suburb.key
     south, west, north, east = suburb.bbox
 
     logger.info("=" * 60)

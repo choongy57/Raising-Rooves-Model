@@ -22,7 +22,7 @@ from tqdm import tqdm
 
 from config.settings import BARRA2_VARIABLES, ERA5_VARIABLES, MELBOURNE_DEFAULT_GHI_KWH_M2_YR, OUTPUT_DIR
 from config.suburbs import get_suburb
-from shared.file_io import ensure_dir, save_parquet
+from shared.file_io import ensure_dir, load_stage_input, save_parquet, save_stage_outputs
 from shared.logging_config import setup_logging
 from stage2_irradiance.barra_client import fetch_all_climate_data
 from stage2_irradiance.cool_roof_calculator import calculate_building_benefit
@@ -66,7 +66,7 @@ def run_stage2_climate(
     Saved to stage2_{suburb}_climate.parquet.
     """
     suburb = get_suburb(suburb_name)
-    suburb_key = suburb.name.lower().replace(" ", "_")
+    suburb_key = suburb.key
     lat, lon = suburb.centroid
 
     logger.info("=" * 60)
@@ -177,21 +177,16 @@ def run_stage2(
         irradiance_source.
     """
     suburb = get_suburb(suburb_name)
-    suburb_key = suburb.name.lower().replace(" ", "_")
+    suburb_key = suburb.key
 
     logger.info("=" * 60)
     logger.info("Stage 2 Pipeline: %s", suburb.name)
     logger.info("=" * 60)
 
     # ── Step 1: Load Stage 1 output ───────────────────────────────────────
-    stage1_path = OUTPUT_DIR / f"stage1_{suburb_key}.parquet"
-    if not stage1_path.exists():
-        logger.error(
-            "Stage 1 output not found: %s — run Stage 1 first.", stage1_path
-        )
+    df = load_stage_input(1, suburb_key)
+    if df is None:
         return pd.DataFrame()
-
-    df = pd.read_parquet(stage1_path)
     logger.info("Step 1/3: Loaded %d buildings from Stage 1.", len(df))
 
     # ── Step 2: Resolve irradiance data ───────────────────────────────────
@@ -291,6 +286,12 @@ def run_stage2(
     benefit_df = pd.DataFrame(benefit_rows)
     df = pd.concat([df.reset_index(drop=True), benefit_df], axis=1)
 
+    # Flag buildings where the HSV absorptance estimate had high uncertainty.
+    # "low" = chromatic or mid-grey surface where classifier confidence is weaker.
+    df["absorptance_confidence"] = df["absorptance_uncertainty"].apply(
+        lambda u: "low" if (u is not None and not pd.isna(u) and float(u) > 0.12) else "ok"
+    )
+
     # ── Summary ───────────────────────────────────────────────────────────
     total_energy_saved = df["energy_saved_kwh_yr"].sum()
     total_co2_saved = df["co2_saved_kg_yr"].sum()
@@ -307,13 +308,7 @@ def run_stage2(
     )
 
     # ── Save outputs ──────────────────────────────────────────────────────
-    out_dir = ensure_dir(OUTPUT_DIR)
-    parquet_path = out_dir / f"stage2_{suburb_key}.parquet"
-    csv_path = out_dir / f"stage2_{suburb_key}.csv"
-    save_parquet(df, parquet_path)
-    df.to_csv(csv_path, index=False)
-    logger.info("Parquet: %s", parquet_path)
-    logger.info("CSV:     %s", csv_path)
+    save_stage_outputs(df, 2, suburb_key)
 
     logger.info("=" * 60)
     logger.info("Stage 2 complete for %s.", suburb.name)

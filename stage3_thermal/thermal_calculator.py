@@ -12,38 +12,15 @@ savings using a three-step building thermal physics chain:
 All parameter defaults and their sources are documented below.
 """
 
-from config.settings import GRID_EMISSIONS_FACTOR_KG_KWH
+from config.settings import (
+    COOLING_FRACTION,
+    GRID_EMISSIONS_FACTOR_KG_KWH,
+    HEAT_TRANSFER_FRACTION,
+    HEAT_TRANSFER_FRACTION_MULTISTOREY,
+    HVAC_COP_COMMERCIAL,
+    HVAC_COP_RESIDENTIAL,
+)
 
-# ── Default thermal parameters ────────────────────────────────────────────────
-# These are building-class defaults; adjusted per building type below.
-
-# Fraction of absorbed roof heat that conducts to the building interior.
-# The rest is re-radiated or convected away at the roof surface before reaching
-# the ceiling/attic. Value derived from AS 4859.1 roof-assembly modelling and
-# CSIRO "Cool Roofs for Australian Homes" (2012, p. 14).
-HEAT_TRANSFER_FRACTION = 0.65
-
-# Fraction of interior heat gain from the roof that directly drives cooling
-# demand. The remainder is offset by ventilation, thermal mass buffering, or
-# night purging. Based on NatHERS 6-star house modelling for Melbourne climate.
-COOLING_FRACTION = 0.70
-
-# Coefficient of performance for a typical split-system air conditioner.
-# Australian residential units: 2.5–3.5 COP at Melbourne summer conditions.
-# GEMS Determination 2019 minimum is 3.0 for a 3.5 kW unit; used as default.
-HVAC_COP_RESIDENTIAL = 3.0
-
-# Higher COP for commercial/office buildings fitted with VRF or central chiller
-# plant. AIRAH DA19 commercial baseline for Melbourne office stock.
-HVAC_COP_COMMERCIAL = 4.0
-
-# Reduced transfer fraction for buildings with 4+ storeys. Additional concrete
-# floors and structural thermal mass attenuate roof heat before it reaches
-# occupied spaces. Conservative estimate; literature range 0.30–0.50.
-HEAT_TRANSFER_FRACTION_MULTISTOREY = 0.40
-
-# Melbourne grid emissions intensity used for CO2 accounting (kg CO2-e / kWh).
-# Re-used from Stage 2 — AEMO Victorian grid average 2023.
 _CO2_FACTOR = GRID_EMISSIONS_FACTOR_KG_KWH
 
 # Building types treated as commercial for COP adjustment.

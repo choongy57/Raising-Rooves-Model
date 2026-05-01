@@ -112,7 +112,8 @@ def download_tiles(
     validate_env_vars(["GOOGLE_MAPS_API_KEY"])
 
     # Set up output directory
-    suburb_key = suburb_name.lower().replace(" ", "_")
+    from config.suburbs import get_suburb
+    suburb_key = get_suburb(suburb_name).key
     output_dir = ensure_dir(TILES_DIR / suburb_key)
 
     # Compute which tiles we need

@@ -24,7 +24,7 @@ from tqdm import tqdm
 
 from config.settings import OUTPUT_DIR
 from config.suburbs import get_suburb
-from shared.file_io import ensure_dir, save_parquet
+from shared.file_io import ensure_dir, load_stage_input, save_parquet, save_stage_outputs
 from shared.logging_config import setup_logging
 from stage3_thermal.thermal_calculator import calculate_thermal_benefit
 
@@ -51,21 +51,16 @@ def run_stage3(suburb_name: str) -> pd.DataFrame:
         columns. Returns an empty DataFrame if Stage 2 output is missing.
     """
     suburb = get_suburb(suburb_name)
-    suburb_key = suburb.name.lower().replace(" ", "_")
+    suburb_key = suburb.key
 
     logger.info("=" * 60)
     logger.info("Stage 3 Thermal Pipeline: %s", suburb.name)
     logger.info("=" * 60)
 
     # ── Step 1: Load Stage 2 output ───────────────────────────────────────────
-    stage2_path = OUTPUT_DIR / f"stage2_{suburb_key}.parquet"
-    if not stage2_path.exists():
-        logger.error(
-            "Stage 2 output not found: %s — run Stage 2 first.", stage2_path
-        )
+    df = load_stage_input(2, suburb_key)
+    if df is None:
         return pd.DataFrame()
-
-    df = pd.read_parquet(stage2_path)
     logger.info("Step 1/2: Loaded %d buildings from Stage 2.", len(df))
 
     # ── Step 2: Apply thermal benefit per building ────────────────────────────
@@ -117,13 +112,7 @@ def run_stage3(suburb_name: str) -> pd.DataFrame:
     )
 
     # ── Save outputs ──────────────────────────────────────────────────────────
-    out_dir = ensure_dir(OUTPUT_DIR)
-    parquet_path = out_dir / f"stage3_{suburb_key}.parquet"
-    csv_path = out_dir / f"stage3_{suburb_key}.csv"
-    save_parquet(df, parquet_path)
-    df.to_csv(csv_path, index=False)
-    logger.info("Parquet: %s", parquet_path)
-    logger.info("CSV:     %s", csv_path)
+    save_stage_outputs(df, 3, suburb_key)
 
     logger.info("=" * 60)
     logger.info("Stage 3 complete for %s.", suburb.name)
