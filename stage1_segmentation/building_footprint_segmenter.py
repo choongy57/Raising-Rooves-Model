@@ -72,6 +72,10 @@ class BuildingFootprint:
     roof_colour: Optional[str] = None    # roof:colour, e.g. "grey", "#cc4444"
     roof_shape: Optional[str] = None     # roof:shape, e.g. "flat", "gabled", "hipped"
 
+    # HSV-derived absorptance (set by pixel classifier; None for OSM-tagged buildings)
+    absorptance_estimate: Optional[float] = None
+    absorptance_uncertainty: Optional[float] = None
+
 
 @dataclass
 class FootprintQueryResult:

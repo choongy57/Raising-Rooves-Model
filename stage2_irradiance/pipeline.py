@@ -275,12 +275,16 @@ def run_stage2(
     logger.info("Step 3/3: Computing cool roof delta per building...")
     benefit_rows = []
     for _, row in tqdm(df.iterrows(), total=len(df), desc="Calculating benefit"):
+        est = row.get("absorptance_estimate")
+        unc = row.get("absorptance_uncertainty")
         benefit = calculate_building_benefit(
             area_m2=float(row["area_m2"]),
             pitch_deg=float(row.get("pitch_deg", 22.5)),
             annual_ghi_kwh_m2=float(row["annual_ghi_kwh_m2"]),
             roof_colour=row.get("roof_colour"),
             roof_material=row.get("roof_material"),
+            absorptance_estimate=float(est) if est is not None and str(est) != "nan" else None,
+            absorptance_uncertainty=float(unc) if unc is not None and str(unc) != "nan" else None,
         )
         benefit_rows.append(benefit)
 

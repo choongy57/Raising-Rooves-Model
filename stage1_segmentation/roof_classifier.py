@@ -47,7 +47,9 @@ class RoofClassification:
     colour: RoofColour
     mean_rgb: tuple[float, float, float]
     mean_hsv: tuple[float, float, float]
-    confidence: float  # 0.0 to 1.0
+    confidence: float           # 0.0 to 1.0 — label classification confidence
+    absorptance_estimate: float = 0.75   # direct HSV → absorptance (0–1)
+    absorptance_uncertainty: float = 0.15  # ±1σ range around estimate
 
 
 def _rgb_to_hsv(rgb: np.ndarray) -> np.ndarray:
@@ -76,6 +78,51 @@ def _rgb_to_hsv(rgb: np.ndarray) -> np.ndarray:
     v = cmax
 
     return np.stack([h, s, v], axis=-1)
+
+
+def _hsv_to_absorptance(mean_h: float, mean_s: float, mean_v: float) -> tuple[float, float]:
+    """
+    Map mean HSV directly to solar absorptance without going through a material label.
+
+    Achromatic surfaces (S < 0.15): linear fit to AS/NZS 4859.1 values.
+      absorptance ≈ 0.97 − 0.77 × V
+      (white V=1.0 → 0.20; light grey V=0.75 → 0.39; mid grey V=0.5 → 0.59;
+       dark grey V=0.25 → 0.78; black V=0.0 → 0.97)
+
+    Chromatic surfaces (S ≥ 0.15): hue-specific minimum enforced because
+    pigmented materials absorb more even at high brightness.
+
+    Returns (absorptance_estimate, uncertainty_1sigma).
+    """
+    if mean_s < 0.15:
+        absorptance = 0.97 - 0.77 * mean_v
+        absorptance = max(0.15, min(0.97, absorptance))
+        # Extremes (near-white or near-black) are more certain than mid-grey
+        uncertainty = 0.08 if (mean_v > 0.75 or mean_v < 0.25) else 0.12
+        return round(absorptance, 3), uncertainty
+
+    # Chromatic: base from V, then hue floor
+    base = 0.97 - 0.77 * mean_v
+    base = max(0.15, min(0.97, base))
+
+    # Red/terracotta (H: 0–30 or 330–360)
+    if mean_h < 30 or mean_h > 330:
+        return round(max(base, 0.65), 3), 0.12
+
+    # Orange/brown (H: 30–50)
+    if 30 <= mean_h < 50:
+        return round(max(base, 0.65), 3), 0.12
+
+    # Green (H: 80–160) — e.g. Colorbond Pale Eucalypt, Wilderness
+    if 80 <= mean_h < 160:
+        return round(max(base, 0.65), 3), 0.13
+
+    # Blue (H: 180–270) — e.g. Colorbond Deep Ocean, Night Sky
+    if 180 <= mean_h < 270:
+        return round(max(base, 0.70), 3), 0.13
+
+    # Other chromatic
+    return round(max(base, 0.65), 3), 0.15
 
 
 def _classify_by_hsv(mean_h: float, mean_s: float, mean_v: float) -> tuple[RoofMaterial, RoofColour, float]:
@@ -158,13 +205,16 @@ def classify_roof(
 
     # Classify
     material, colour, confidence = _classify_by_hsv(mean_hsv[0], mean_hsv[1], mean_hsv[2])
+    absorptance, uncertainty = _hsv_to_absorptance(mean_hsv[0], mean_hsv[1], mean_hsv[2])
 
     logger.debug(
-        "Segment %d: material=%s, colour=%s (conf=%.2f), RGB=(%.0f,%.0f,%.0f)",
+        "Segment %d: material=%s colour=%s (conf=%.2f) absorptance=%.2f±%.2f RGB=(%.0f,%.0f,%.0f)",
         segment_id,
         material.value,
         colour.value,
         confidence,
+        absorptance,
+        uncertainty,
         *mean_rgb,
     )
 
@@ -174,4 +224,6 @@ def classify_roof(
         mean_rgb=mean_rgb,
         mean_hsv=mean_hsv,
         confidence=confidence,
+        absorptance_estimate=absorptance,
+        absorptance_uncertainty=uncertainty,
     )

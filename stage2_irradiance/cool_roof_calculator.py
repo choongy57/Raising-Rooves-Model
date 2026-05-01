@@ -50,12 +50,10 @@ ABSORPTANCE_BY_MATERIAL: dict[str | None, float] = {
 }
 
 
-def _absorptance(roof_colour: str | None, roof_material: str | None) -> float:
-    """Return estimated pre-treatment solar absorptance for a building."""
-    # Prefer colour — more directly measured
+def _absorptance_from_labels(roof_colour: str | None, roof_material: str | None) -> float:
+    """Return absorptance from OSM colour/material labels (used when no HSV estimate available)."""
     if roof_colour and roof_colour != "other":
         return ABSORPTANCE_BY_COLOUR.get(roof_colour, 0.75)
-    # Fall back to material
     return ABSORPTANCE_BY_MATERIAL.get(roof_material, 0.75)
 
 
@@ -65,6 +63,8 @@ def calculate_building_benefit(
     annual_ghi_kwh_m2: float,
     roof_colour: str | None,
     roof_material: str | None,
+    absorptance_estimate: float | None = None,
+    absorptance_uncertainty: float | None = None,
 ) -> dict:
     """
     Calculate cool roof benefit for a single building.
@@ -88,7 +88,13 @@ def calculate_building_benefit(
     # Energy incident on the horizontal footprint (= energy intercepted by roof)
     energy_incident_kwh_yr = annual_ghi_kwh_m2 * area_m2
 
-    absorptance_before = _absorptance(roof_colour, roof_material)
+    # Use HSV-derived estimate when available (direct measurement from pixels).
+    # Fall back to label lookup for OSM-tagged buildings that bypassed the classifier.
+    if absorptance_estimate is not None and absorptance_estimate > 0:
+        absorptance_before = absorptance_estimate
+    else:
+        absorptance_before = _absorptance_from_labels(roof_colour, roof_material)
+
     energy_saved_kwh_yr = energy_incident_kwh_yr * (absorptance_before - COOL_ROOF_ABSORPTANCE)
     # Clamp: if absorptance_before < COOL_ROOF_ABSORPTANCE (already a cool roof), saving = 0
     energy_saved_kwh_yr = max(0.0, energy_saved_kwh_yr)

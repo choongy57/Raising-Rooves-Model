@@ -192,6 +192,8 @@ def _classify_buildings_from_tiles(
         result = classify_roof(tile_img, mask, segment_id=int(bldg.building_id.lstrip("r")) if bldg.building_id.lstrip("r").isdigit() else 0)
         bldg.roof_material = result.material.value
         bldg.roof_colour = result.colour.value
+        bldg.absorptance_estimate = result.absorptance_estimate
+        bldg.absorptance_uncertainty = result.absorptance_uncertainty
         confidences[bldg.building_id] = result.confidence
         n_classified += 1
 
@@ -294,6 +296,8 @@ def _building_to_row(
         "roof_shape": building.roof_shape,
         "pitch_deg": _assumed_pitch_deg(building.building_type, building.roof_shape, building.levels),
         "classifier_confidence": round(classifier_confidence, 2),
+        "absorptance_estimate": round(building.absorptance_estimate, 3) if building.absorptance_estimate is not None else None,
+        "absorptance_uncertainty": round(building.absorptance_uncertainty, 3) if building.absorptance_uncertainty is not None else None,
     }
 
 
