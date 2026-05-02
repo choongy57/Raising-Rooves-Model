@@ -208,17 +208,18 @@ def build_choropleth_map(
     polygons: dict[str, list[list[float]]] | None,
     suburb_key: str,
     suburb_name: str,
+    use_polygons: bool = False,
 ) -> Path:
     """
     Build a folium HTML map with per-building choropleth colouring.
 
-    Performance design:
-    - prefer_canvas=True: Leaflet renders to <canvas> instead of thousands of SVG nodes.
-    - Single GeoJSON layer: one browser layer, not one DOM element per building.
-    - Popup data stored in a compact JS lookup table injected into the page,
-      NOT embedded inside every GeoJSON feature — keeps GeoJSON payload small.
-    - Polygon coordinates rounded to 5 dp (~1 m precision) to reduce JSON size.
-    - Click-based popups (not hover tooltips) avoid per-mousemove DOM lookups.
+    Default mode (use_polygons=False): renders each building as a sized circle at
+    its centroid. One Point per building → ~2 coordinates in GeoJSON vs 10-20 for
+    a polygon. File stays under ~1 MB and the browser holds much less memory.
+    Circle radius is scaled by the primary metric so relative magnitude is visible.
+
+    Polygon mode (use_polygons=True): renders full building outlines. Only practical
+    for suburbs with <1000 buildings; pass --polygons on the CLI.
     """
     has_stage3 = "electricity_saved_kwh_yr" in df.columns
     colour_col = "electricity_saved_kwh_yr" if has_stage3 else "energy_saved_kwh_yr"
@@ -227,7 +228,6 @@ def build_choropleth_map(
     centre_lat = float(df["lat"].mean())
     centre_lon = float(df["lon"].mean())
 
-    # prefer_canvas=True dramatically improves rendering speed for 1000+ features
     fmap = folium.Map(
         location=[centre_lat, centre_lon],
         zoom_start=15,
@@ -235,18 +235,25 @@ def build_choropleth_map(
         prefer_canvas=True,
     )
 
-    vmin = float(df[colour_col].min())
-    vmax = float(df[colour_col].max())
+    values = df[colour_col].fillna(0)
+    vmin = float(values.min())
+    vmax = float(values.max())
+    vp95 = float(values.quantile(0.95)) if vmax > vmin else vmax  # cap colour scale at p95
 
-    # ── Build GeoJSON (geometry + fill colour only — no popup text in features) ──
-    # Popup content is stored separately in a JS dict keyed by feature index to
-    # avoid duplicating large HTML strings across every GeoJSON feature property.
+    # Circle radius: log-scaled between 3 and 14 px so outliers don't swamp small buildings
+    v_log_min = np.log1p(max(vmin, 0))
+    v_log_max = np.log1p(vp95) if vp95 > 0 else 1.0
+
+    def _radius(v: float) -> float:
+        v_log = np.log1p(max(v, 0))
+        frac = (v_log - v_log_min) / (v_log_max - v_log_min) if v_log_max > v_log_min else 0.5
+        return round(3 + float(np.clip(frac, 0, 1)) * 11, 1)
+
     features = []
+    # popup_rows: compact list [bid, area_m2, mat, energy, elec_or_null, co2]
+    # Stored outside GeoJSON so geometry payload stays small; bound via JS after render.
+    popup_rows: list[list] = []
     n_polygons = 0
-    n_points = 0
-
-    def _round_coords(coords: list[list[float]]) -> list[list[float]]:
-        return [[round(c[0], 5), round(c[1], 5)] for c in coords]
 
     for _, row in df.iterrows():
         bid = str(row["building_id"])
@@ -254,51 +261,82 @@ def build_choropleth_map(
         co2 = float(row["co2_saved_kg_yr"])
         area = float(row["area_m2"])
         mat = str(row.get("roof_material", "unknown"))
-        colour_val = float(row[colour_col]) if colour_col in row.index else energy
-        fill_color = _energy_to_hex(colour_val, vmin, vmax)
+        colour_val = float(values.loc[row.name]) if row.name in values.index else 0.0
+        fill_color = _energy_to_hex(min(colour_val, vp95), vmin, vp95)
+        idx = len(features)
 
         elec = row.get("electricity_saved_kwh_yr")
-        elec_line = (
-            f"<br>Electricity: {float(elec):,.0f} kWh/yr"
-            if elec is not None and str(elec) != "nan" and has_stage3
-            else ""
-        )
-        popup_html = (
-            f"<b>{bid}</b><br>{area:,.0f} m² · {mat}"
-            f"<br>Energy: {energy:,.0f} kWh/yr{elec_line}"
-            f"<br>CO₂: {co2:,.0f} kg/yr"
-        )
+        elec_val = round(float(elec), 0) if elec is not None and str(elec) != "nan" and has_stage3 else None
+        popup_rows.append([bid, round(area, 0), mat, round(energy, 0), elec_val, round(co2, 0)])
 
-        poly = polygons.get(bid) if polygons is not None else None
-        if poly and len(poly) >= 3:
-            geometry = {"type": "Polygon", "coordinates": [_round_coords(poly)]}
-            n_polygons += 1
+        if use_polygons:
+            poly = polygons.get(bid) if polygons is not None else None
+            if poly and len(poly) >= 3:
+                coords = [[round(c[0], 5), round(c[1], 5)] for c in poly]
+                geometry = {"type": "Polygon", "coordinates": [coords]}
+                n_polygons += 1
+            else:
+                geometry = {"type": "Point",
+                            "coordinates": [round(float(row["lon"]), 5),
+                                            round(float(row["lat"]), 5)]}
         else:
-            geometry = {"type": "Point", "coordinates": [round(float(row["lon"]), 5),
-                                                          round(float(row["lat"]), 5)]}
-            n_points += 1
+            geometry = {"type": "Point",
+                        "coordinates": [round(float(row["lon"]), 5),
+                                        round(float(row["lat"]), 5)]}
 
+        # Only store colour and index — no popup HTML — to keep GeoJSON payload small
         features.append({
             "type": "Feature",
             "geometry": geometry,
-            "properties": {"c": fill_color, "p": popup_html},
+            "properties": {"c": fill_color, "r": _radius(colour_val), "i": idx},
         })
 
-    logger.info("Map: %d polygon features, %d point markers.", n_polygons, n_points)
+    mode_label = f"{n_polygons} polygons" if use_polygons else f"{len(features)} circles"
+    logger.info("Map: %s", mode_label)
 
     geojson_data = {"type": "FeatureCollection", "features": features}
 
-    folium.GeoJson(
+    geo_layer = folium.GeoJson(
         geojson_data,
         style_function=lambda f: {
             "fillColor": f["properties"]["c"],
             "color": f["properties"]["c"],
-            "weight": 1,
-            "fillOpacity": 0.7,
+            "weight": 0 if not use_polygons else 1,
+            "fillOpacity": 0.75,
         },
-        # GeoJsonPopup fires on click only — no per-mousemove DOM work unlike GeoJsonTooltip
-        popup=folium.GeoJsonPopup(fields=["p"], aliases=[""], labels=False, max_width=280),
-    ).add_to(fmap)
+        marker=folium.CircleMarker(radius=6),
+    )
+    geo_layer.add_to(fmap)
+
+    # ── Inject compact popup data as JS array, bind on click after layer loads ──
+    # This keeps popup content out of the GeoJSON entirely: ~3× smaller per entry
+    # ([bid, area, mat, energy, elec, co2] vs full HTML string).
+    import json as _json
+    layer_var = geo_layer.get_name()
+    elec_label = "Elec" if has_stage3 else ""
+    popup_js = f"""
+    <script>
+    (function() {{
+        var d = {_json.dumps(popup_rows)};
+        var lyr = window["{layer_var}"];
+        function bind(lyr) {{
+            lyr.eachLayer(function(f) {{
+                var i = f.feature && f.feature.properties && f.feature.properties.i;
+                if (i === undefined) return;
+                var r = d[i];
+                var html = '<b>' + r[0] + '</b><br>' + r[1] + ' m² · ' + r[2] +
+                    '<br>Energy: ' + r[3].toLocaleString() + ' kWh/yr' +
+                    (r[4] !== null ? '<br>{elec_label}: ' + r[4].toLocaleString() + ' kWh/yr' : '') +
+                    '<br>CO₂: ' + r[5].toLocaleString() + ' kg/yr';
+                f.bindPopup(html, {{maxWidth: 280}});
+            }});
+        }}
+        if (window["{layer_var}"]) {{ bind(window["{layer_var}"]); }}
+        else {{ document.addEventListener("DOMContentLoaded", function() {{ bind(window["{layer_var}"]); }}); }}
+    }})();
+    </script>
+    """
+    fmap.get_root().html.add_child(folium.Element(popup_js))
 
     legend_html = _make_legend_html(vmin, vmax, colour_label)
     fmap.get_root().html.add_child(folium.Element(legend_html))
@@ -729,6 +767,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Use Stage 2 data even if Stage 3 output exists.",
     )
     parser.add_argument(
+        "--polygons",
+        action="store_true",
+        help="Render full building polygon outlines instead of circles. "
+             "Only recommended for suburbs with <1000 buildings — large suburbs "
+             "will use significant browser memory.",
+    )
+    parser.add_argument(
         "--debug",
         action="store_true",
         help="Enable DEBUG logging.",
@@ -776,7 +821,8 @@ def main(argv: list[str] | None = None) -> None:
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
     # Build outputs
-    map_path = build_choropleth_map(df, polygons, suburb_key, suburb_name)
+    map_path = build_choropleth_map(df, polygons, suburb_key, suburb_name,
+                                    use_polygons=args.polygons)
     chart_path = build_summary_charts(df, suburb_key, suburb_name)
     report_path = build_html_report(df, suburb_key, suburb_name, chart_path, map_path)
 
