@@ -70,7 +70,7 @@ def calculate_thermal_benefit(
     energy_saved = max(0.0, energy_saved_kwh_yr)
 
     # ── Parameter selection ───────────────────────────────────────────────────
-    btype = (building_type or "").lower().strip()
+    btype = ("" if not building_type or (isinstance(building_type, float)) else str(building_type)).lower().strip()
     is_commercial = btype in _COMMERCIAL_TYPES
 
     hvac_cop = HVAC_COP_COMMERCIAL if is_commercial else HVAC_COP_RESIDENTIAL

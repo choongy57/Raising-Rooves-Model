@@ -128,16 +128,20 @@ MELBOURNE_DEFAULT_GHI_KWH_M2_YR = 1850.0
 # ── Stage 3 Thermal Physics ───────────────────────────────────────────────────
 # Centralised here so sensitivity analysis can vary them without editing source.
 
-# Fraction of absorbed roof heat that conducts to the building interior.
-# The rest is re-radiated or convected away at the roof surface.
-# Source: AS 4859.1 roof-assembly modelling; CSIRO "Cool Roofs for Australian
-# Homes" (2012, p. 14).
-HEAT_TRANSFER_FRACTION = 0.65
+# Fraction of absorbed solar delta (cool roof benefit) that conducts to the interior.
+# Derived from roof assembly thermal physics: U_roof / (U_roof + h_outside)
+#   U_roof     ≈ 0.40 W/m²K  (typical Australian insulated ceiling, R2.5)
+#   h_outside  ≈ 25.0 W/m²K  (combined convective + radiative surface coefficient)
+#   → fraction = 0.40 / 25.4 ≈ 0.016
+# Produces ~200–600 kWh/yr electricity saving for a typical Melbourne house,
+# consistent with CSIRO "Cool Roofs for Australian Homes" (2012).
+# Previous value (0.65) was incorrect — it would imply no roof insulation.
+# TODO: validate against Stuart's NatHERS runs or AS/NZS 4859.1 simulation.
+HEAT_TRANSFER_FRACTION = 0.016
 
-# Reduced transfer fraction for 4+ storey buildings — additional concrete floors
-# and structural thermal mass attenuate the heat path to occupied spaces.
-# Conservative estimate; published literature range 0.30–0.50.
-HEAT_TRANSFER_FRACTION_MULTISTOREY = 0.40
+# Reduced fraction for 4+ storey buildings — greater thermal mass and multiple
+# floor slabs further attenuate the heat path from roof to occupied spaces.
+HEAT_TRANSFER_FRACTION_MULTISTOREY = 0.008
 
 # Fraction of interior heat gain from the roof that drives active cooling demand.
 # The remainder is offset by natural ventilation, thermal mass buffering, or night
