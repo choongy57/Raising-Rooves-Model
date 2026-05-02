@@ -156,6 +156,30 @@ python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data
 python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data/raw/barra/carlton_ghi.csv --debug
 ```
 
+### Stage 3 - Thermal Electricity Savings
+
+```bash
+python -m stage3_thermal.run_stage3 --suburb "Carlton"
+python -m stage3_thermal.run_stage3 --suburb "Carlton" --debug
+python -m stage3_thermal.run_stage3 --list-suburbs
+```
+
+### Visualise Results (single suburb)
+
+```bash
+python -m tools.visualise_results --suburb Carlton
+python -m tools.visualise_results --suburb Carlton --stage2-only
+python -m tools.visualise_results --suburb Carlton --debug
+```
+
+### Compare Suburbs (multi-suburb summary for FYP reporting)
+
+```bash
+python -m tools.compare_suburbs
+python -m tools.compare_suburbs --stage 2
+python -m tools.compare_suburbs --debug
+```
+
 ### Tests
 
 ```bash
