@@ -1,0 +1,8 @@
+{
+  "sheetId": "1z_eGmxD2i_fewjbLDBB36IMgFKzJ3WyDaQdipnD03_8",
+  "sheetName": "Tickets",
+  "mainBranch": "main",
+  "testCommand": "python -m pytest tests/ --tb=short -q --no-header",
+  "typecheckCommand": "",
+  "prReviewers": []
+}

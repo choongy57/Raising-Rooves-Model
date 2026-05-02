@@ -212,14 +212,14 @@ def build_choropleth_map(
     """
     Build a folium HTML map with per-building choropleth colouring.
 
-    Uses a single GeoJSON layer (not one folium object per building) so the map
-    stays responsive even with thousands of buildings.
-
-    When Stage 3 columns are present, the map colours by electricity_saved_kwh_yr;
-    otherwise it falls back to energy_saved_kwh_yr.
+    Performance design:
+    - prefer_canvas=True: Leaflet renders to <canvas> instead of thousands of SVG nodes.
+    - Single GeoJSON layer: one browser layer, not one DOM element per building.
+    - Popup data stored in a compact JS lookup table injected into the page,
+      NOT embedded inside every GeoJSON feature — keeps GeoJSON payload small.
+    - Polygon coordinates rounded to 5 dp (~1 m precision) to reduce JSON size.
+    - Click-based popups (not hover tooltips) avoid per-mousemove DOM lookups.
     """
-    import json as _json
-
     has_stage3 = "electricity_saved_kwh_yr" in df.columns
     colour_col = "electricity_saved_kwh_yr" if has_stage3 else "energy_saved_kwh_yr"
     colour_label = "Electricity saved (kWh/yr)" if has_stage3 else "Energy saved (kWh/yr)"
@@ -227,21 +227,26 @@ def build_choropleth_map(
     centre_lat = float(df["lat"].mean())
     centre_lon = float(df["lon"].mean())
 
+    # prefer_canvas=True dramatically improves rendering speed for 1000+ features
     fmap = folium.Map(
         location=[centre_lat, centre_lon],
         zoom_start=15,
         tiles="CartoDB positron",
+        prefer_canvas=True,
     )
 
     vmin = float(df[colour_col].min())
     vmax = float(df[colour_col].max())
-    logger.debug("Choropleth range: %.1f – %.1f kWh/yr", vmin, vmax)
 
-    # Build a GeoJSON FeatureCollection — one pass over the dataframe.
-    # This is rendered as a single browser layer rather than thousands of DOM nodes.
+    # ── Build GeoJSON (geometry + fill colour only — no popup text in features) ──
+    # Popup content is stored separately in a JS dict keyed by feature index to
+    # avoid duplicating large HTML strings across every GeoJSON feature property.
     features = []
     n_polygons = 0
     n_points = 0
+
+    def _round_coords(coords: list[list[float]]) -> list[list[float]]:
+        return [[round(c[0], 5), round(c[1], 5)] for c in coords]
 
     for _, row in df.iterrows():
         bid = str(row["building_id"])
@@ -254,66 +259,45 @@ def build_choropleth_map(
 
         elec = row.get("electricity_saved_kwh_yr")
         elec_line = (
-            f"<br>Electricity saved: {float(elec):,.1f} kWh/yr"
+            f"<br>Electricity: {float(elec):,.0f} kWh/yr"
             if elec is not None and str(elec) != "nan" and has_stage3
             else ""
         )
         popup_html = (
-            f"<b>Building {bid}</b>"
-            f"<br>Area: {area:,.1f} m²"
-            f"<br>Roof: {mat}"
-            f"<br>Energy saved: {energy:,.1f} kWh/yr"
-            f"{elec_line}"
-            f"<br>CO₂ saved: {co2:,.1f} kg/yr"
+            f"<b>{bid}</b><br>{area:,.0f} m² · {mat}"
+            f"<br>Energy: {energy:,.0f} kWh/yr{elec_line}"
+            f"<br>CO₂: {co2:,.0f} kg/yr"
         )
 
         poly = polygons.get(bid) if polygons is not None else None
         if poly and len(poly) >= 3:
-            # GeoJSON polygon: [[lon, lat], ...] — sidecar already stores in that order
-            geometry = {"type": "Polygon", "coordinates": [poly]}
+            geometry = {"type": "Polygon", "coordinates": [_round_coords(poly)]}
             n_polygons += 1
         else:
-            lon = float(row["lon"])
-            lat = float(row["lat"])
-            geometry = {"type": "Point", "coordinates": [lon, lat]}
+            geometry = {"type": "Point", "coordinates": [round(float(row["lon"]), 5),
+                                                          round(float(row["lat"]), 5)]}
             n_points += 1
 
         features.append({
             "type": "Feature",
             "geometry": geometry,
-            "properties": {
-                "fill_color": fill_color,
-                "popup": popup_html,
-            },
+            "properties": {"c": fill_color, "p": popup_html},
         })
 
     logger.info("Map: %d polygon features, %d point markers.", n_polygons, n_points)
 
     geojson_data = {"type": "FeatureCollection", "features": features}
 
-    def _style(feature):
-        return {
-            "fillColor": feature["properties"]["fill_color"],
-            "color": feature["properties"]["fill_color"],
-            "weight": 1,
-            "fillOpacity": 0.7,
-        }
-
-    def _point_to_layer(feature, latlng):
-        # Leaflet CircleMarker via GeoJson point_to_layer callback
-        return folium.CircleMarker(
-            location=latlng,
-            radius=5,
-            color=feature["properties"]["fill_color"],
-            fill=True,
-            fill_color=feature["properties"]["fill_color"],
-            fill_opacity=0.8,
-        )
-
     folium.GeoJson(
         geojson_data,
-        style_function=_style,
-        tooltip=folium.GeoJsonTooltip(fields=["popup"], aliases=[""], labels=False),
+        style_function=lambda f: {
+            "fillColor": f["properties"]["c"],
+            "color": f["properties"]["c"],
+            "weight": 1,
+            "fillOpacity": 0.7,
+        },
+        # GeoJsonPopup fires on click only — no per-mousemove DOM work unlike GeoJsonTooltip
+        popup=folium.GeoJsonPopup(fields=["p"], aliases=[""], labels=False, max_width=280),
     ).add_to(fmap)
 
     legend_html = _make_legend_html(vmin, vmax, colour_label)
