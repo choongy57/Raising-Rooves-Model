@@ -14,6 +14,7 @@ Optional local source: Microsoft Australia Building Footprints GeoJSON
 import json
 import math
 from pathlib import Path
+from typing import Optional
 
 import pandas as pd
 from tqdm import tqdm
@@ -269,6 +270,53 @@ def _assumed_pitch_deg(
     return _TYPICAL
 
 
+_FLAT_PITCH_THRESHOLD = 5.0  # degrees — below this a roof is classified flat
+
+
+def _orientation_from_polygon(polygon_latlon: list[list[float]]) -> Optional[float]:
+    """
+    Compute orientation as the bearing of the normal to the longest footprint wall.
+
+    The longest wall approximates the building's primary axis. Its outward normal
+    gives the dominant direction a roof face slopes toward.
+
+    Returns bearing in degrees clockwise from North (0–360), or None for
+    degenerate polygons (fewer than 2 distinct vertices).
+    """
+    if len(polygon_latlon) < 2:
+        return None
+
+    lat_scale = 111320.0
+    lon_scale = 111320.0 * math.cos(math.radians(
+        sum(c[1] for c in polygon_latlon) / len(polygon_latlon)
+    ))
+
+    best_len = -1.0
+    best_dx = 0.0
+    best_dy = 0.0
+
+    pts = polygon_latlon
+    n = len(pts)
+    for i in range(n):
+        lon0, lat0 = pts[i][0], pts[i][1]
+        lon1, lat1 = pts[(i + 1) % n][0], pts[(i + 1) % n][1]
+        dx = (lon1 - lon0) * lon_scale   # east component (m)
+        dy = (lat1 - lat0) * lat_scale   # north component (m)
+        length = math.hypot(dx, dy)
+        if length > best_len:
+            best_len = length
+            best_dx = dx
+            best_dy = dy
+
+    if best_len < 1e-6:
+        return None
+
+    # Wall bearing: angle of the edge itself from North (atan2 east, north)
+    wall_bearing = math.degrees(math.atan2(best_dx, best_dy)) % 360.0
+    # Normal to the wall (rotated 90° clockwise)
+    return round((wall_bearing + 90.0) % 360.0, 1)
+
+
 def _building_to_row(
     building: BuildingFootprint,
     suburb_name: str,
@@ -281,11 +329,21 @@ def _building_to_row(
     centroid_lat = sum(lats) / len(lats) if lats else 0.0
     centroid_lon = sum(lons) / len(lons) if lons else 0.0
 
+    pitch_deg = _assumed_pitch_deg(building.building_type, building.roof_shape, building.levels)
+    is_flat = pitch_deg < _FLAT_PITCH_THRESHOLD
+
+    # Actual roof surface area accounts for pitch — for flat roofs it equals footprint area.
+    if pitch_deg > 0.5:
+        roof_surface_area_m2 = round(building.area_m2 / math.cos(math.radians(pitch_deg)), 1)
+    else:
+        roof_surface_area_m2 = building.area_m2
+
     return {
         "suburb": suburb_name,
         "building_id": building.building_id,
         "roof_id": f"{suburb_name.lower().replace(' ', '_')}_{building.building_id}",
         "area_m2": building.area_m2,
+        "roof_surface_area_m2": roof_surface_area_m2,
         "lat": round(centroid_lat, 6),
         "lon": round(centroid_lon, 6),
         "source": building.source,
@@ -294,7 +352,10 @@ def _building_to_row(
         "roof_material": building.roof_material,
         "roof_colour": building.roof_colour,
         "roof_shape": building.roof_shape,
-        "pitch_deg": _assumed_pitch_deg(building.building_type, building.roof_shape, building.levels),
+        "pitch_deg": pitch_deg,
+        "pitch_source": "assumed",
+        "is_flat": is_flat,
+        "orientation_deg": _orientation_from_polygon(building.polygon_latlon),
         "classifier_confidence": round(classifier_confidence, 2),
         "absorptance_estimate": round(building.absorptance_estimate, 3) if building.absorptance_estimate is not None else None,
         "absorptance_uncertainty": round(building.absorptance_uncertainty, 3) if building.absorptance_uncertainty is not None else None,
@@ -492,6 +553,25 @@ def run_stage1(
     with open(polygons_path, "w") as fh:
         json.dump(polygon_list, fh, separators=(",", ":"))
     logger.info("Polygons sidecar: %s", polygons_path)
+
+    # GeoJSON — one feature per building; all attributed columns as properties.
+    geojson_path = out_dir / f"stage1_{suburb_key}.geojson"
+    features = []
+    for row, bldg in zip(rows, buildings):
+        props = {k: v for k, v in row.items()}
+        geom = {
+            "type": "Polygon",
+            "coordinates": [bldg.polygon_latlon],
+        }
+        features.append({"type": "Feature", "geometry": geom, "properties": props})
+    geojson_doc = {
+        "type": "FeatureCollection",
+        "crs": {"type": "name", "properties": {"name": "urn:ogc:def:crs:OGC:1.3:CRS84"}},
+        "features": features,
+    }
+    with open(geojson_path, "w") as fh:
+        json.dump(geojson_doc, fh, separators=(",", ":"))
+    logger.info("GeoJSON: %s  (%d features)", geojson_path, len(features))
 
     # ── Step 6: Visualise ─────────────────────────────────────────────────
     logger.info("Step 6/6: Generating annotated visualisation...")
