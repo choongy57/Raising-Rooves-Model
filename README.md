@@ -318,6 +318,8 @@ Stage 3 appends these columns to the Stage 2 table:
 
 | Column | Description |
 | --- | --- |
+| `roof_r_value_m2k` | Roof thermal resistance R_roof inferred from building attributes (m²·K/W) |
+| `heat_transfer_fraction` | Effective roof→interior fraction, `U/(U+h_out)`, incl. multistorey attenuation |
 | `heat_to_interior_kwh_yr` | Solar heat conducted through roof to building interior |
 | `cooling_load_reduction_kwh_yr` | Reduction in cooling load (subset of heat to interior) |
 | `electricity_saved_kwh_yr` | Actual cooling electricity saved (after HVAC COP) |
@@ -330,15 +332,42 @@ Output files:
 
 ### Stage 3 Thermal Parameters
 
+The roof-to-interior heat fraction is now derived **per building** from an
+inferred roof thermal resistance `R_roof`, following the roof-only heat-ingress
+framing in Maggie's model:
+
+```
+U_roof   = 1 / R_roof
+fraction = U_roof / (U_roof + h_out)     # h_out = 25 W/m²K
+```
+
+`R_roof` is inferred from Stage 1 attributes (no construction-age field exists):
+
+| Building | Inferred R_roof | Resulting fraction |
+| --- | --- | --- |
+| Commercial / industrial / warehouse | R1.5 | ≈ 0.026 |
+| Residential, tiled roof (default) | R2.5 | ≈ 0.016 |
+| Residential, metal roof (older-stock proxy) | R1.5 | ≈ 0.026 |
+| Unknown attributes | R2.5 | ≈ 0.016 |
+
+Other parameters:
+
 | Parameter | Value | Description |
 | --- | --- | --- |
-| Roof thermal resistance | R2.5 | Typical uninsulated Australian tile roof |
-| Heat transfer fraction | 0.65 (residential), 0.40 (4+ storeys) | Fraction of absorbed solar conducted to interior |
+| Outdoor surface coefficient `h_out` | 25 W/m²K | Combined convective + radiative |
+| Multistorey attenuation | ×0.5 for 4+ storeys | Extra thermal-mass/slab attenuation |
 | Cooling fraction | 0.70 | Fraction of interior heat gain driving active cooling |
 | HVAC COP | 3.0 (residential), 4.0 (commercial) | Split system / VRF baseline |
 
-As a result, `electricity_saved_kwh_yr` is approximately 13–22% of
-`energy_saved_kwh_yr` from Stage 2.
+The R2.5 default reproduces the previous single heat-transfer constant, so
+well-insulated stock is unchanged while poorly-insulated stock now correctly
+shows a larger benefit. As a result, `electricity_saved_kwh_yr` is roughly
+0.3–0.6% of `energy_saved_kwh_yr` from Stage 2 (the bulk of absorbed-solar
+reduction never reaches the conditioned interior through an insulated roof).
+
+**Known limitation:** `R_roof` is a documented proxy from `building_type` /
+`roof_material`, not a measured value — Stage 1 provides no construction age.
+Replacing it with ABS/VicMap construction-era data is a future improvement.
 
 ## Visualisation
 
@@ -475,9 +504,11 @@ conclusions.
 4. HSV roof classification is heuristic and should be validated.
 5. Assumed pitch should be replaced with DSM-derived pitch where possible.
 6. BARRA2/ERA5 access is not yet reliable in the current pipeline.
-7. Stage 3 thermal parameters (R-value, COP, heat transfer fraction) are
-   Melbourne residential defaults. Commercial and high-rise buildings use
-   adjusted values but no per-building insulation data is available.
+7. Stage 3 roof insulation `R_roof` is inferred per building from
+   `building_type` / `roof_material` (no construction-age data exists), then
+   drives the heat-transfer fraction via `U/(U+h_out)`. COP and cooling
+   fraction remain Melbourne defaults. No measured per-building insulation is
+   available — the R_roof mapping is a documented proxy.
 8. `--max-tiles` is not a reliable spatial smoke-test cap in the current Stage 1
    pipeline because later steps still use the full tile folder/query extent.
 9. Some footprint sources map large compounds as one building polygon rather

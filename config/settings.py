@@ -128,20 +128,39 @@ MELBOURNE_DEFAULT_GHI_KWH_M2_YR = 1850.0
 # ── Stage 3 Thermal Physics ───────────────────────────────────────────────────
 # Centralised here so sensitivity analysis can vary them without editing source.
 
-# Fraction of absorbed solar delta (cool roof benefit) that conducts to the interior.
-# Derived from roof assembly thermal physics: U_roof / (U_roof + h_outside)
-#   U_roof     ≈ 0.40 W/m²K  (typical Australian insulated ceiling, R2.5)
-#   h_outside  ≈ 25.0 W/m²K  (combined convective + radiative surface coefficient)
-#   → fraction = 0.40 / 25.4 ≈ 0.016
-# Produces ~200–600 kWh/yr electricity saving for a typical Melbourne house,
-# consistent with CSIRO "Cool Roofs for Australian Homes" (2012).
-# Previous value (0.65) was incorrect — it would imply no roof insulation.
+# Fraction of the absorbed-solar delta (Stage 2 cool roof benefit) that conducts
+# to the interior is derived PER BUILDING from its roof insulation, following the
+# roof-only heat-ingress framing in Maggie's model (roof-only-heat-ingress-model):
+#   U_roof   = 1 / R_roof                       (W/m²K)
+#   fraction = U_roof / (U_roof + H_OUTSIDE)    (unitless)
+# H_OUTSIDE is the combined convective + radiative outdoor surface coefficient.
+# Worked values:  R0.5 → 0.074,  R2.5 → 0.0155,  R3.2 → 0.012.
+# The R2.5 default reproduces the previous single 0.016 constant, so well-insulated
+# stock is unchanged while poorly-insulated stock now correctly shows more benefit.
+# Produces ~200–600 kWh/yr for a typical Melbourne house, consistent with CSIRO
+# "Cool Roofs for Australian Homes" (2012).
 # TODO: validate against Stuart's NatHERS runs or AS/NZS 4859.1 simulation.
-HEAT_TRANSFER_FRACTION = 0.016
+H_OUTSIDE_W_M2K = 25.0
 
-# Reduced fraction for 4+ storey buildings — greater thermal mass and multiple
-# floor slabs further attenuate the heat path from roof to occupied spaces.
-HEAT_TRANSFER_FRACTION_MULTISTOREY = 0.008
+# Per-building roof thermal resistance R_roof (m²·K/W). Stage 1 gives us no
+# construction-age field, so R_roof is inferred from the attributes we do have
+# (building_type, levels, roof_material). This is a documented assumption for
+# sensitivity analysis, NOT a measured value — see README known limitations.
+R_ROOF_DEFAULT = 2.5  # unknown / missing attributes → assume modern insulated stock
+
+R_ROOF_BY_CATEGORY: dict[str, float] = {
+    "commercial":  1.5,  # metal deck, variable insulation
+    "residential": 2.5,  # modern detached/low-rise default
+}
+
+# Metal-roofed residential stock skews older/less-insulated — nudge R_roof down
+# one step. Weak proxy (material, not age); documented as an assumption.
+R_ROOF_METAL_RESIDENTIAL = 1.5
+
+# Extra attenuation multiplier for 4+ storey buildings — greater thermal mass and
+# multiple floor slabs further reduce the roof-to-occupant heat path, on top of
+# the R_roof fraction.
+MULTISTOREY_ATTENUATION = 0.5
 
 # Fraction of interior heat gain from the roof that drives active cooling demand.
 # The remainder is offset by natural ventilation, thermal mass buffering, or night

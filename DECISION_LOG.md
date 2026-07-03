@@ -140,3 +140,41 @@ These are ±1σ estimates, not worst-case bounds.
 **Rejected:**
 - *Lookup table on classifier material label* — requires a labelled dataset; intermediate
   label adds error. Direct HSV → absorptance is more transparent and calibratable.
+
+---
+
+## 2026-07-03 — Stage 3 heat transfer: per-building R_roof instead of one constant
+
+**Decision:** Replace the single hardcoded `HEAT_TRANSFER_FRACTION` (0.016) with a
+per-building fraction derived from an inferred roof thermal resistance `R_roof`,
+following the roof-only heat-ingress framing in Maggie's model:
+`U_roof = 1/R_roof`, `fraction = U_roof / (U_roof + h_out)`, `h_out = 25 W/m²K`.
+`R_roof` is inferred from Stage 1 attributes: commercial/industrial → R1.5,
+residential tiled → R2.5, residential metal → R1.5 (older-stock proxy), unknown → R2.5.
+The `levels ≥ 4` case keeps a separate ×0.5 thermal-mass attenuation multiplier.
+
+**Why:** Maggie's standalone notebook and our Stage 3 overlap less than they appear —
+in her `Q_standard − Q_cool` the conductive `(Ta−Ti)/R_roof` term cancels, leaving the
+absorbed-solar delta that Stage 2 already computes. The genuinely new contribution is
+*explicit per-building insulation*. Folding `R_roof` into the existing annual pipeline
+lets poorly-insulated stock correctly show more benefit while the R2.5 default reproduces
+the previous constant, so well-insulated stock is unchanged.
+
+**Tradeoffs:** `R_roof` is a proxy from building_type/roof_material, not measured — Stage 1
+has no construction-age field. Metal-roof-as-older-stock is a weak signal. Two new audit
+columns (`roof_r_value_m2k`, `heat_transfer_fraction`) are written so the assumption is
+inspectable per building.
+
+**Rejected:**
+- *Full hourly roof-heat engine* (port Maggie's hourly notebook against BARRA2 hourly
+  tas + irradiance) — physically richer but a much larger lift and recomputes Stage 2's
+  absorbed-solar delta. Deferred; hourly `tas` plumbing already exists in
+  `stage2_irradiance/temperature_processor.py` if revisited.
+- *Two fixed scenarios (poorly vs well insulated)* — cleaner but produces a range rather
+  than a per-building number; harder to aggregate for FYP reporting.
+
+**Follow-up:** replace the R_roof proxy with ABS/VicMap construction-era data; validate the
+fraction against Stuart's NatHERS runs.
+
+**Code affected:** `config/settings.py`, `stage3_thermal/thermal_calculator.py`,
+`stage3_thermal/pipeline.py`, `tests/test_stage3_thermal.py`, `README.md`.

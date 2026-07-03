@@ -7,6 +7,8 @@ calculator per building, and writes:
   - data/output/stage3_{suburb_key}.csv
 
 Added columns (on top of all Stage 2 columns):
+  roof_r_value_m2k              — R_roof inferred from building attributes
+  heat_transfer_fraction        — effective roof→interior fraction (incl. multistorey)
   heat_to_interior_kwh_yr       — roof heat that reaches the interior
   cooling_load_reduction_kwh_yr — subset that drives the cooling system
   electricity_saved_kwh_yr      — electricity saved by reduced AC demand
