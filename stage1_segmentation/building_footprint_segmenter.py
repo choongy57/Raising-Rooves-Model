@@ -98,40 +98,6 @@ class FootprintQueryResult:
 # ── Coordinate helpers ────────────────────────────────────────────────────────
 
 
-def _tile_bbox(
-    centre_lat: float,
-    centre_lon: float,
-    zoom: int = DEFAULT_ZOOM,
-    tile_size: int = DEFAULT_TILE_SIZE,
-    pad_factor: float = 1.1,
-) -> tuple[float, float, float, float]:
-    """
-    Compute the (south, west, north, east) bounding box of a tile.
-
-    Args:
-        centre_lat/lon: Tile centre in WGS84.
-        zoom: Tile zoom level.
-        tile_size: Tile edge length in pixels.
-        pad_factor: Expand bbox by this factor to catch edge buildings.
-
-    Returns:
-        (south, west, north, east) in decimal degrees.
-    """
-    C = 40075016.686  # Earth circumference (m)
-    metres_per_px = C * math.cos(math.radians(centre_lat)) / (2 ** (zoom + 8))
-    half_m = (tile_size / 2) * metres_per_px * pad_factor
-
-    dlat = half_m / 111320.0
-    dlon = half_m / (111320.0 * math.cos(math.radians(centre_lat)))
-
-    return (
-        centre_lat - dlat,
-        centre_lon - dlon,
-        centre_lat + dlat,
-        centre_lon + dlon,
-    )
-
-
 def _latlon_to_pixel(
     lat: float,
     lon: float,

@@ -552,7 +552,6 @@ Raising Rooves Model/
     tile_downloader.py
     dsm_processor.py
     pitch_extractor.py
-    _legacy/
   stage2_irradiance/
     pipeline.py
     run_stage2.py

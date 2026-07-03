@@ -26,7 +26,6 @@ CSV format expected:
 Melbourne placeholder: ~1850 kWh/m²/yr (use MELBOURNE_DEFAULT_GHI_KWH_M2_YR from settings).
 """
 
-import math
 from pathlib import Path
 
 import pandas as pd
