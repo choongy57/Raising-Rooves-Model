@@ -23,6 +23,7 @@ from stage3_thermal.thermal_calculator import (
     R_ROOF_DEFAULT,
     R_ROOF_METAL_RESIDENTIAL,
     _heat_fraction_from_r_roof,
+    _normalize_label,
     _r_roof_for_building,
     calculate_thermal_benefit,
 )
@@ -69,23 +70,43 @@ class TestZeroSaving:
         assert result["electricity_saved_kwh_yr"] == 0.0
 
 
+class TestNormalizeLabel:
+    def test_none_and_nan_become_empty(self):
+        assert _normalize_label(None) == ""
+        assert _normalize_label(float("nan")) == ""
+
+    def test_lower_and_strip(self):
+        assert _normalize_label("  Commercial ") == "commercial"
+        assert _normalize_label("METAL_DARK") == "metal_dark"
+
+
 class TestRRoofInference:
     def test_commercial_uses_commercial_r_roof(self):
-        assert _r_roof_for_building("commercial", None, None) == R_ROOF_BY_CATEGORY["commercial"]
-        assert _r_roof_for_building("warehouse", 1, None) == R_ROOF_BY_CATEGORY["commercial"]
+        assert _r_roof_for_building("commercial", None) == R_ROOF_BY_CATEGORY["commercial"]
+        assert _r_roof_for_building("warehouse", None) == R_ROOF_BY_CATEGORY["commercial"]
 
     def test_residential_uses_residential_r_roof(self):
-        assert _r_roof_for_building("house", 1, "terracotta") == R_ROOF_BY_CATEGORY["residential"]
-        assert _r_roof_for_building("residential", 2, "concrete_tile") == R_ROOF_BY_CATEGORY["residential"]
+        assert _r_roof_for_building("house", "terracotta") == R_ROOF_BY_CATEGORY["residential"]
+        assert _r_roof_for_building("residential", "concrete_tile") == R_ROOF_BY_CATEGORY["residential"]
 
     def test_metal_residential_nudged_down(self):
         """Metal-roofed residential stock is treated as less insulated."""
-        assert _r_roof_for_building("house", 1, "metal") == R_ROOF_METAL_RESIDENTIAL
-        assert _r_roof_for_building("house", 1, "metal_dark") == R_ROOF_METAL_RESIDENTIAL
+        assert _r_roof_for_building("house", "metal") == R_ROOF_METAL_RESIDENTIAL
+        assert _r_roof_for_building("house", "metal_dark") == R_ROOF_METAL_RESIDENTIAL
+
+    def test_metal_nudge_does_not_leak_to_non_residential(self):
+        """
+        Regression: a metal roof only nudges *residential* stock down to R1.5.
+        Non-residential, non-commercial tags (school, church, hospital) must fall
+        to the default, not inherit the older-residential R-value.
+        """
+        assert _r_roof_for_building("school", "metal") == R_ROOF_DEFAULT
+        assert _r_roof_for_building("church", "metal_dark") == R_ROOF_DEFAULT
+        assert _r_roof_for_building("hospital", "corrugated_iron") == R_ROOF_DEFAULT
 
     def test_unknown_falls_back_to_default(self):
-        assert _r_roof_for_building(None, None, None) == R_ROOF_DEFAULT
-        assert _r_roof_for_building(float("nan"), None, float("nan")) == R_ROOF_DEFAULT
+        assert _r_roof_for_building("", None) == R_ROOF_DEFAULT
+        assert _r_roof_for_building("garage", None) == R_ROOF_DEFAULT
 
     def test_r_roof_surfaced_in_output(self):
         result = calculate_thermal_benefit(1000.0, building_type="commercial")

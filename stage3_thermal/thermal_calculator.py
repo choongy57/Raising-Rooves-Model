@@ -35,59 +35,54 @@ from config.settings import (
 
 _CO2_FACTOR = GRID_EMISSIONS_FACTOR_KG_KWH
 
-# Building types treated as commercial for COP adjustment.
+# Building types treated as commercial: higher HVAC COP *and* lower roof R-value.
+# COP selection and R_roof selection currently use the same set; split them if
+# they ever need to diverge (e.g. institutional stock).
 _COMMERCIAL_TYPES = frozenset(
     {"commercial", "office", "retail", "industrial", "warehouse"}
 )
 
-# OSM building tags that denote non-residential stock for R_roof selection.
-_NON_RESIDENTIAL_TYPES = frozenset(
-    {"commercial", "office", "retail", "industrial", "warehouse"}
+# Building types treated as residential stock for R_roof selection. The metal-roof
+# nudge below only applies to these — a metal-roofed school/church is NOT residential.
+_RESIDENTIAL_TYPES = frozenset(
+    {"residential", "house", "detached", "apartments", "yes"}
 )
 
 # roof_material labels (from Stage 1) that denote a metal roof.
 _METAL_MATERIALS = frozenset({"metal", "metal_light", "metal_dark", "corrugated_iron"})
 
 
-def _r_roof_for_building(
-    building_type: str | None,
-    levels: int | None,
-    roof_material: str | None,
-) -> float:
+def _normalize_label(value: str | None) -> str:
+    """Lower-case and strip an OSM label; treat None/NaN as an empty string."""
+    if not value or isinstance(value, float):
+        return ""
+    return str(value).lower().strip()
+
+
+def _r_roof_for_building(btype: str, roof_material: str | None) -> float:
     """
     Infer a roof thermal resistance R_roof (m²·K/W) from Stage 1 attributes.
 
-    Priority: non-residential category → residential (with a metal-roof nudge for
-    likely older/less-insulated stock) → default. Stage 1 has no construction-age
-    field, so this is a documented proxy, not a measured value.
+    Priority: commercial category → residential (with a metal-roof nudge for
+    likely older/less-insulated stock) → default. Non-residential, non-commercial
+    tags (school, church, hospital, university, ...) and unknown fall to the
+    default. Stage 1 has no construction-age field, so this is a documented
+    proxy, not a measured value.
 
     Args:
-        building_type: OSM building tag from Stage 1 (may be None).
-        levels: Number of storeys from Stage 1 (unused for R_roof selection today;
-            multistorey attenuation is applied separately). Accepted for a stable
-            signature and future refinement.
+        btype: Building type from Stage 1, already normalised via _normalize_label.
         roof_material: Roof material label from Stage 1 (may be None).
 
     Returns:
         R_roof in m²·K/W.
     """
-    btype = (
-        "" if not building_type or isinstance(building_type, float)
-        else str(building_type)
-    ).lower().strip()
-    material = (
-        "" if not roof_material or isinstance(roof_material, float)
-        else str(roof_material)
-    ).lower().strip()
-
-    if btype in _NON_RESIDENTIAL_TYPES:
+    if btype in _COMMERCIAL_TYPES:
         return R_ROOF_BY_CATEGORY["commercial"]
 
-    # Everything else is treated as residential stock.
-    if material in _METAL_MATERIALS:
-        return R_ROOF_METAL_RESIDENTIAL
-
-    if btype in {"residential", "house", "detached", "apartments", "yes"}:
+    if btype in _RESIDENTIAL_TYPES:
+        # Metal-roofed residential skews older / less-insulated.
+        if _normalize_label(roof_material) in _METAL_MATERIALS:
+            return R_ROOF_METAL_RESIDENTIAL
         return R_ROOF_BY_CATEGORY["residential"]
 
     return R_ROOF_DEFAULT
@@ -155,7 +150,7 @@ def calculate_thermal_benefit(
     energy_saved = max(0.0, energy_saved_kwh_yr)
 
     # ── Parameter selection ───────────────────────────────────────────────────
-    btype = ("" if not building_type or (isinstance(building_type, float)) else str(building_type)).lower().strip()
+    btype = _normalize_label(building_type)
     is_commercial = btype in _COMMERCIAL_TYPES
 
     hvac_cop = HVAC_COP_COMMERCIAL if is_commercial else HVAC_COP_RESIDENTIAL
@@ -166,7 +161,7 @@ def calculate_thermal_benefit(
         n_levels = 1
 
     # Per-building roof insulation drives the base conductance fraction.
-    r_roof = _r_roof_for_building(building_type, levels, roof_material)
+    r_roof = _r_roof_for_building(btype, roof_material)
     base_fraction = _heat_fraction_from_r_roof(r_roof)
 
     # Tall buildings have more thermal mass; less roof heat reaches occupants.
