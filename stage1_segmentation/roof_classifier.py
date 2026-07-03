@@ -12,9 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
-from PIL import Image
 
-from config.settings import ROOF_MATERIAL_PRIORS
 from shared.logging_config import setup_logging
 
 logger = setup_logging("roof_classifier")
@@ -132,8 +130,6 @@ def _classify_by_hsv(mean_h: float, mean_s: float, mean_v: float) -> tuple[RoofM
     Heuristic rules based on typical satellite imagery appearance of
     Melbourne roofing materials.
     """
-    confidence = 0.5  # base confidence for heuristic
-
     # Very bright / white (high V, low S) → light metal or coated
     if mean_v > 0.75 and mean_s < 0.15:
         return RoofMaterial.METAL_LIGHT, RoofColour.WHITE, 0.7

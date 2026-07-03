@@ -26,7 +26,6 @@ CSV format expected:
 Melbourne placeholder: ~1850 kWh/m²/yr (use MELBOURNE_DEFAULT_GHI_KWH_M2_YR from settings).
 """
 
-import math
 from pathlib import Path
 
 import pandas as pd
@@ -78,35 +77,6 @@ def load_irradiance_csv(path: Path) -> pd.DataFrame:
         )
 
     return df[["lat", "lon", "annual_ghi_kwh_m2"]].copy()
-
-
-def load_barra2_irradiance(
-    south: float,
-    west: float,
-    north: float,
-    east: float,
-    year_start: int = 2010,
-    year_end: int = 2020,
-) -> pd.DataFrame:
-    """
-    Query BARRA2 via OPeNDAP for annual mean GHI over a bbox.
-
-    NOT YET IMPLEMENTED — returns NotImplementedError.
-
-    When implementing:
-      - Connect to BARRA2_THREDDS_BASE (config/settings.py)
-      - Variable: av_swsfcdown (W/m², instantaneous average)
-      - Convert to annual kWh/m²: mean_W_m2 × 8760 / 1000
-      - Return DataFrame with lat, lon, annual_ghi_kwh_m2
-
-    NCI THREDDS access requires an NCI account and VPN/network access.
-    See: https://thredds.nci.org.au/thredds/catalog/ob53/catalog.html
-    """
-    raise NotImplementedError(
-        "BARRA2 connector not yet implemented. "
-        "Provide an irradiance CSV via --irradiance-file instead. "
-        "See stage2_irradiance/irradiance_loader.py for the expected CSV format."
-    )
 
 
 def nearest_ghi(

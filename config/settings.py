@@ -91,6 +91,9 @@ MELBOURNE_CENTRE = (-37.8136, 144.9631)  # lat, lon
 MELBOURNE_BBOX = (-38.1, 144.5, -37.5, 145.5)  # south, west, north, east
 
 # ── Roof Material Priors (CSR VIC data) ──────────────────────────────────────
+# Retained for future use: these priors are not yet wired into the HSV roof
+# classifier. Kept as the reference VIC material distribution for when material
+# prior weighting is added.
 
 ROOF_MATERIAL_PRIORS = {
     "metal": 0.475,  # ~45-50% of VIC roofs

@@ -27,6 +27,9 @@ logs/
 # Jupyter
 .ipynb_checkpoints/
 
+# Test / tooling caches
+.pytest_cache/
+
 # IDE
 .vscode/
 .idea/

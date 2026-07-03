@@ -98,40 +98,6 @@ class FootprintQueryResult:
 # ── Coordinate helpers ────────────────────────────────────────────────────────
 
 
-def _tile_bbox(
-    centre_lat: float,
-    centre_lon: float,
-    zoom: int = DEFAULT_ZOOM,
-    tile_size: int = DEFAULT_TILE_SIZE,
-    pad_factor: float = 1.1,
-) -> tuple[float, float, float, float]:
-    """
-    Compute the (south, west, north, east) bounding box of a tile.
-
-    Args:
-        centre_lat/lon: Tile centre in WGS84.
-        zoom: Tile zoom level.
-        tile_size: Tile edge length in pixels.
-        pad_factor: Expand bbox by this factor to catch edge buildings.
-
-    Returns:
-        (south, west, north, east) in decimal degrees.
-    """
-    C = 40075016.686  # Earth circumference (m)
-    metres_per_px = C * math.cos(math.radians(centre_lat)) / (2 ** (zoom + 8))
-    half_m = (tile_size / 2) * metres_per_px * pad_factor
-
-    dlat = half_m / 111320.0
-    dlon = half_m / (111320.0 * math.cos(math.radians(centre_lat)))
-
-    return (
-        centre_lat - dlat,
-        centre_lon - dlon,
-        centre_lat + dlat,
-        centre_lon + dlon,
-    )
-
-
 def _latlon_to_pixel(
     lat: float,
     lon: float,
@@ -657,10 +623,6 @@ def _load_shapefile_footprints(
     return footprints
 
 
-# Keep old name as alias so any external callers aren't broken
-_load_msft_footprints = _load_local_footprints
-
-
 def _load_gpkg_footprints(
     gpkg_file: Path,
     south: float,
@@ -903,68 +865,3 @@ def query_buildings_in_bbox(
         len(unique), sum(b.area_m2 for b in unique),
     )
     return unique
-
-
-def query_buildings_in_tile(
-    centre_lat: float,
-    centre_lon: float,
-    zoom: int = DEFAULT_ZOOM,
-    tile_size: int = DEFAULT_TILE_SIZE,
-    local_file: Optional[Path] = None,
-) -> FootprintQueryResult:
-    """
-    Return all building footprints covering a satellite tile centred at (lat, lon).
-
-    By default, queries the OSM Overpass API (no key, no download required).
-    If local_file is provided, reads from that GeoJSON/GeoJSONL file instead
-    (VicMap FOI Buildings or Microsoft Australia Building Footprints).
-
-    Args:
-        centre_lat/lon: Centre coordinate of the tile.
-        zoom: Tile zoom level (default 19).
-        tile_size: Tile edge in pixels (default from settings).
-        local_file: Optional path to local GeoJSON footprints file.
-
-    Returns:
-        FootprintQueryResult with all buildings found in the tile area.
-    """
-    bbox = _tile_bbox(centre_lat, centre_lon, zoom, tile_size)
-    south, west, north, east = bbox
-
-    if local_file is not None:
-        if not local_file.exists():
-            raise FileNotFoundError(
-                f"Local footprint file not found: {local_file}\n"
-                "Supported sources:\n"
-                "  VicMap FOI Buildings: https://datashare.maps.vic.gov.au\n"
-                "  Microsoft AU Footprints: https://github.com/microsoft/AustraliaBuildingFootprints"
-            )
-        loader = _load_shapefile_footprints if local_file.suffix.lower() == ".shp" else _load_local_footprints
-        footprints = loader(
-            local_file, south, west, north, east,
-            centre_lat, centre_lon, zoom, tile_size,
-        )
-        source_label = f"local file {local_file.name}"
-    else:
-        logger.info(
-            "Querying OSM Overpass for buildings in bbox "
-            "(%.5f, %.5f) -> (%.5f, %.5f)",
-            south, west, north, east,
-        )
-        data = _overpass_query(south, west, north, east)
-        footprints = _osm_response_to_footprints(
-            data, centre_lat, centre_lon, zoom, tile_size
-        )
-        source_label = "OSM Overpass API"
-
-    logger.info(
-        "Found %d buildings via %s | total area %.0f m2",
-        len(footprints), source_label, sum(b.area_m2 for b in footprints),
-    )
-
-    return FootprintQueryResult(
-        query_lat=centre_lat,
-        query_lon=centre_lon,
-        tile_bbox=bbox,
-        buildings=footprints,
-    )
