@@ -284,6 +284,10 @@ def run_stage2(
         benefit_rows.append(benefit)
 
     benefit_df = pd.DataFrame(benefit_rows)
+    # Stage 1 now provides roof_surface_area_m2 directly — drop the duplicate
+    # recalculated by calculate_building_benefit to avoid conflicting columns.
+    if "roof_surface_area_m2" in df.columns and "roof_surface_area_m2" in benefit_df.columns:
+        benefit_df = benefit_df.drop(columns=["roof_surface_area_m2"])
     df = pd.concat([df.reset_index(drop=True), benefit_df], axis=1)
 
     # Flag buildings where the HSV absorptance estimate had high uncertainty.

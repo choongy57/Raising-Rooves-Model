@@ -33,6 +33,11 @@ logs/
 *.swp
 *.swo
 
+# Local tooling / agent config (personal, not shared)
+.claude/
+.mcp.json
+.obsidian/
+
 # OS
 .DS_Store
 Thumbs.db
