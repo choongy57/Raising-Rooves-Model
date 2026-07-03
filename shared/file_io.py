@@ -74,20 +74,6 @@ def load_parquet(path: Path, required_columns: list[str] | None = None) -> pd.Da
     return df
 
 
-def save_csv(df: pd.DataFrame, path: Path) -> Path:
-    """Save a DataFrame to CSV. Returns the path."""
-    ensure_dir(path.parent)
-    df.to_csv(path, index=False)
-    return path
-
-
-def load_csv(path: Path) -> pd.DataFrame:
-    """Load a CSV file into a DataFrame."""
-    if not path.exists():
-        raise FileNotFoundError(f"CSV file not found: {path}")
-    return pd.read_csv(path)
-
-
 def save_stage_outputs(
     df: pd.DataFrame,
     stage: int,

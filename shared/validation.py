@@ -6,9 +6,6 @@ a clear message on failure.
 """
 
 import os
-from pathlib import Path
-
-from PIL import Image
 
 from config.settings import MELBOURNE_BBOX
 
@@ -39,40 +36,6 @@ def validate_bbox(bbox: tuple[float, float, float, float]) -> bool:
         raise ValueError(f"Latitude ({south}, {north}) outside Melbourne range")
     if west < mel_west - margin or east > mel_east + margin:
         raise ValueError(f"Longitude ({west}, {east}) outside Melbourne range")
-
-    return True
-
-
-def validate_tile(path: Path, expected_size: int = 640) -> bool:
-    """
-    Check that a downloaded tile image is valid.
-
-    Args:
-        path: Path to the tile image file.
-        expected_size: Expected width/height in pixels.
-
-    Raises:
-        ValueError: If file is missing, corrupt, wrong size, or all-black.
-    """
-    if not path.exists():
-        raise ValueError(f"Tile file does not exist: {path}")
-
-    try:
-        img = Image.open(path)
-        img.verify()
-    except Exception as e:
-        raise ValueError(f"Tile image is corrupt: {path} — {e}")
-
-    # Re-open after verify (verify closes the file)
-    img = Image.open(path)
-    w, h = img.size
-    if w != expected_size or h != expected_size:
-        raise ValueError(f"Tile size {w}x{h} does not match expected {expected_size}x{expected_size}: {path}")
-
-    # Check not all-black (common error tile indicator)
-    extrema = img.convert("L").getextrema()
-    if extrema == (0, 0):
-        raise ValueError(f"Tile is all-black (likely an error tile): {path}")
 
     return True
 
