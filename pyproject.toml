@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "raising-rooves-model"
+version = "0.1.0"
+description = "Modelling the benefits of cool roof interventions across Melbourne suburbs (Monash FYP)."
+readme = "README.md"
+requires-python = ">=3.11"
+dynamic = ["dependencies"]
+
+# Dependencies are sourced from requirements.txt so it stays the single
+# source of truth. Run `pip install -e .` to install the project (and its
+# stage packages) as an editable install — this removes the need to run
+# from the repo root and makes every stage importable from anywhere.
+
+[tool.setuptools]
+# Explicit package list so build tooling does not sweep in data/, notebooks/,
+# research/, or tests/ as importable packages.
+packages = [
+    "config",
+    "shared",
+    "stage1_segmentation",
+    "stage2_irradiance",
+    "stage3_thermal",
+    "tools",
+]
+
+[tool.setuptools.dynamic]
+dependencies = { file = ["requirements.txt"] }
+
+[project.scripts]
+# Console entry points — real commands equivalent to the `python -m ...` form.
+rooves-stage1 = "stage1_segmentation.run_stage1:main"
+rooves-stage2 = "stage2_irradiance.run_stage2:main"
+rooves-stage3 = "stage3_thermal.run_stage3:main"
+rooves-analyse-coordinate = "tools.analyse_coordinate:main"
+rooves-extract-pitch = "tools.extract_pitch:main"
+rooves-compare-suburbs = "tools.compare_suburbs:main"
+rooves-visualise = "tools.visualise_results:main"
+rooves-build-footprint-index = "tools.build_footprint_index:main"
+
+[tool.pytest.ini_options]
+# Pin test collection to tests/ so `pytest` from the repo root never tries to
+# collect test_-prefixed helpers that live in production modules.
+testpaths = ["tests"]

@@ -12,9 +12,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
-from PIL import Image
 
-from config.settings import ROOF_MATERIAL_PRIORS
 from shared.logging_config import setup_logging
 
 logger = setup_logging("roof_classifier")
