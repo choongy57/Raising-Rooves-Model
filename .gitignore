@@ -12,7 +12,8 @@ dist/
 build/
 *.egg
 
-# Data (too large for git)
+# Data (too large for git). data/samples/ is deliberately NOT ignored —
+# it holds the small tracked fixture that lets a fresh clone run Stage 2/3.
 data/raw/
 data/processed/
 data/output/
@@ -45,7 +46,7 @@ logs/
 .DS_Store
 Thumbs.db
 
-# SAM3 model weights
+# Model weights
 *.pth
 *.pt
 *.bin
