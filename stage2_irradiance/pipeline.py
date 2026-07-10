@@ -9,9 +9,8 @@ Two responsibilities:
      energy saving and CO2 reduction. Saved as stage2_{suburb}.parquet / .csv.
 
 Irradiance source priority:
-  a. BARRA2 via OPeNDAP (requires NCI access — connect when available)
-     NOTE: in practice this path is dormant until NCI project access lands;
-     NASA POWER is the de-facto source today.
+  a. BARRA2 via OPeNDAP — gated behind BARRA2_ENABLED (False until NCI
+     project ob53 access lands); NASA POWER is the de-facto source today.
   b. CSV file provided via --irradiance-file (lat, lon, annual_ghi_kwh_m2)
   c. NASA POWER REST API (free, no key — ~50 km resolution, cached per suburb)
   d. Melbourne default GHI constant (~1850 kWh/m²/yr) — last-resort placeholder
@@ -22,7 +21,12 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from config.settings import BARRA2_VARIABLES, MELBOURNE_DEFAULT_GHI_KWH_M2_YR, OUTPUT_DIR
+from config.settings import (
+    BARRA2_ENABLED,
+    BARRA2_VARIABLES,
+    MELBOURNE_DEFAULT_GHI_KWH_M2_YR,
+    OUTPUT_DIR,
+)
 from config.suburbs import get_suburb
 from shared.file_io import ensure_dir, load_stage_input, save_parquet, save_stage_outputs
 from shared.logging_config import setup_logging
@@ -45,14 +49,6 @@ from stage2_irradiance.temperature_processor import (
 )
 
 logger = setup_logging("stage2_pipeline")
-
-
-def _annual_ghi_from_monthly(irradiance_summary: dict) -> float | None:
-    """Convert BARRA2 monthly summary to annual kWh/m²/yr, or None if unavailable."""
-    daily = irradiance_summary.get("annual_mean_ghi_kwh_m2_day")
-    if daily:
-        return round(daily * 365, 1)
-    return None
 
 
 def run_stage2_climate(
@@ -156,7 +152,7 @@ def run_stage2(
     and compute per-building cool roof benefit.
 
     Irradiance source priority:
-      1. BARRA2 via OPeNDAP (if accessible — run_stage2_climate)
+      1. BARRA2 via OPeNDAP (only when BARRA2_ENABLED — run_stage2_climate)
       2. CSV file at irradiance_file (lat, lon, annual_ghi_kwh_m2)
       3. NASA POWER REST API (free, no key — cached to data/raw/nasa_power/)
       4. Melbourne default GHI constant (~1850 kWh/m²/yr)
@@ -192,20 +188,26 @@ def run_stage2(
     irradiance_source: str = "unknown"
     irradiance_df: pd.DataFrame | None = None
 
-    # Priority 1: BARRA2 via OPeNDAP (requires NCI access — fails gracefully)
+    # Priority 1: BARRA2 via OPeNDAP. Gated behind BARRA2_ENABLED because
+    # without NCI access every monthly fetch fails after a network round-trip
+    # (hundreds of doomed calls per run). Flip the flag in config/settings.py
+    # when ob53 access lands.
     annual_ghi_scalar: float | None = None
-    try:
-        climate_df = run_stage2_climate(suburb_name, start_year, end_year)
-        if not climate_df.empty and "mean_ghi_kwh_m2_day" in climate_df.columns:
-            daily_mean = climate_df["mean_ghi_kwh_m2_day"].mean()
-            annual_ghi_scalar = round(daily_mean * 365, 1)
-            irradiance_source = "barra2"
-            logger.info(
-                "Irradiance source: BARRA2 — annual GHI %.0f kWh/m²/yr",
-                annual_ghi_scalar,
-            )
-    except Exception as e:
-        logger.debug("BARRA2 not available: %s", e)
+    if BARRA2_ENABLED:
+        try:
+            climate_df = run_stage2_climate(suburb_name, start_year, end_year)
+            if not climate_df.empty and "mean_ghi_kwh_m2_day" in climate_df.columns:
+                daily_mean = climate_df["mean_ghi_kwh_m2_day"].mean()
+                annual_ghi_scalar = round(daily_mean * 365, 1)
+                irradiance_source = "barra2"
+                logger.info(
+                    "Irradiance source: BARRA2 — annual GHI %.0f kWh/m²/yr",
+                    annual_ghi_scalar,
+                )
+        except Exception as e:
+            logger.debug("BARRA2 not available: %s", e)
+    else:
+        logger.debug("BARRA2 disabled (BARRA2_ENABLED=False) — skipping to CSV/NASA POWER.")
 
     if annual_ghi_scalar is None:
         # Priority 2: User-supplied CSV

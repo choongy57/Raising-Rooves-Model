@@ -88,7 +88,8 @@ Optional pitch improvement
         v
 Stage 2: irradiance + cool roof delta
   try BARRA2 → user CSV → NASA POWER → Melbourne default GHI
-  (BARRA2 dormant until NCI access; NASA POWER is the de-facto source)
+  (BARRA2 gated off via BARRA2_ENABLED=False in config/settings.py until
+   NCI access lands; NASA POWER is the de-facto source)
   calculate energy/co2 reduction
         |
         v
@@ -308,8 +309,9 @@ map PNG.
 ## Running Stage 2
 
 ```bash
-# Uses BARRA2 if available; otherwise NASA POWER (auto, no key needed);
-# otherwise user CSV; otherwise Melbourne default GHI (~1850 kWh/m²/yr)
+# Irradiance: user CSV if given; otherwise NASA POWER (auto, no key needed);
+# otherwise Melbourne default GHI (~1850 kWh/m²/yr). BARRA2 runs first only
+# when BARRA2_ENABLED=True in config/settings.py (needs NCI access).
 python -m stage2_irradiance.run_stage2 --suburb "Clayton"
 
 # Use a prepared irradiance grid CSV

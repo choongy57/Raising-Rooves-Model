@@ -44,19 +44,10 @@ cp .env.example .env
 
 ### Your first output (no keys needed)
 
-Before chasing API keys, prove your setup works using the tracked sample:
-
-```bash
-# Windows (PowerShell):
-Copy-Item data/samples/stage1_carlton.parquet data/output/
-# macOS / Linux:
-cp data/samples/stage1_carlton.parquet data/output/
-
-python -m stage2_irradiance.run_stage2 --suburb Carlton
-python -m stage3_thermal.run_stage3 --suburb Carlton
-python -m tools.visualise_results --suburb Carlton
-# Open data/output/stage3_carlton_report.html in a browser
-```
+Before chasing API keys, prove your setup works using the tracked sample in
+`data/samples/`: follow the **Quickstart (no API keys needed)** section at the
+top of `README.md` (canonical commands), then open
+`data/output/stage3_carlton_report.html` in a browser.
 
 If that works, your environment is good — you only need API keys for the
 specific stage you're working on (see the table below).

@@ -72,7 +72,8 @@ benefits of cool roof interventions across Melbourne suburbs.
    `stage1_{suburb}_with_pitch.parquet` no stage reads), or formally de-scope
    it — pitch only affects roof-area/costing, not energy numbers.
 5. Expand to 3+ suburbs and use `tools.compare_suburbs` for FYP reporting.
-6. Connect real BARRA2 GHI when NCI project ob53 access is available.
+6. Connect real BARRA2 GHI when NCI project ob53 access is available
+   (flip `BARRA2_ENABLED` in `config/settings.py`).
 7. Move remaining in-module constants (absorptance tables in
    `cool_roof_calculator.py`, assumed-pitch table in Stage 1 pipeline) into
    `config/settings.py` for sensitivity sweeps.

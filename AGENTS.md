@@ -88,14 +88,13 @@ for user-facing setup, commands, and project explanation.
 - Stage 3 thermal model: per-building R_roof → heat-transfer fraction →
   cooling load → electricity saved → CO2.
 
-### Next (ranked — mirror of README Roadmap)
+### Next
 
-1. Validate Stage 3 constants (NatHERS / AS-NZS 4859.1) + sensitivity analysis.
-2. Validate the HSV classifier against a sampled Gemini experiment run.
-3. True ABS SA2 suburb boundaries with an `inside_suburb` flag.
-4. Wire measured DSM pitch into Stage 2, or formally de-scope it.
-5. Expand to 3+ suburbs; use `tools.compare_suburbs` for reporting.
-6. Connect BARRA2 GHI when NCI access is available.
+The canonical ranked roadmap lives in `README.md` ("Roadmap — What Needs To
+Change For The Final Model") — do not duplicate it here. Top three for
+orientation: validate Stage 3 constants (NatHERS + sensitivity analysis),
+validate the HSV classifier via a sampled Gemini experiment run, and adopt
+true ABS SA2 suburb boundaries.
 
 ## Run Commands
 

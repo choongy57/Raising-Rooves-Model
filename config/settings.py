@@ -51,6 +51,12 @@ DEFAULT_MAP_TYPE = "satellite"
 # NCI account required. Monash students: register at https://my.nci.org.au
 # and ask your supervisor (Stuart) for project ob53 access.
 
+# Master switch for the BARRA2 OPeNDAP path. Without NCI project ob53 access
+# every fetch fails (2 variables x years x 12 months of doomed, un-timeboxed
+# network calls), so the path stays off until access lands. Flip to True once
+# an NCI account with ob53 is available.
+BARRA2_ENABLED = False
+
 BARRA2_THREDDS_BASE = "https://thredds.nci.org.au/thredds/dodsC/ob53"
 BARRA2_CATALOG_BASE = "https://thredds.nci.org.au/thredds/catalog/ob53"
 

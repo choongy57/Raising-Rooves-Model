@@ -9,24 +9,11 @@ clone can run Stages 2 and 3 immediately — no API keys, no tile downloads.
 | --- | --- |
 | `stage1_carlton.parquet` | Real Stage 1 output for Carlton: 6,177 buildings with footprint area, roof material/colour, absorptance estimates. |
 
-## Quickstart from a fresh clone
+## How to use it
 
-```bash
-# 1. Copy the sample into the output folder Stage 2 reads from
-#    (PowerShell)
-Copy-Item data/samples/stage1_carlton.parquet data/output/
-#    (macOS/Linux)
-cp data/samples/stage1_carlton.parquet data/output/
-
-# 2. Run Stage 2 (irradiance comes from NASA POWER — free, no key)
-python -m stage2_irradiance.run_stage2 --suburb Carlton
-
-# 3. Run Stage 3 (thermal → electricity savings)
-python -m stage3_thermal.run_stage3 --suburb Carlton
-
-# 4. Visualise
-python -m tools.visualise_results --suburb Carlton
-```
+Follow the **Quickstart (no API keys needed)** section at the top of the
+repo-root `README.md` — that is the canonical copy of the commands (copy this
+parquet into `data/output/`, then run Stage 2, Stage 3, and the visualiser).
 
 To regenerate this fixture from scratch you need a `GOOGLE_MAPS_API_KEY`:
 `python -m stage1_segmentation.run_stage1 --suburb Carlton`, then copy the
