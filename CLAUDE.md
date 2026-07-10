@@ -11,9 +11,8 @@ benefits of cool roof interventions across Melbourne suburbs.
 
 - Team: Ryan, Seamus, Angus, Flynn, Maggie, Gabrielle
 - Supervisor: Stuart
-- Current phase: Stages 1-3 all run end-to-end. Focus has shifted from
-  building the pipeline to validating it (Stage 3 constants, HSV classifier,
-  suburb boundaries) for the final FYP report
+- Current phase: Stage 1 roof segmentation is complete; Stage 2 irradiance
+  and cool roof delta calculation is in progress
 - Persistence model: no database; store outputs as CSV, Parquet, JSON, and
   images under `data/`
 - Main goal: produce defensible per-building estimates of cool roof benefit,
@@ -45,38 +44,25 @@ benefits of cool roof interventions across Melbourne suburbs.
 - Standalone roof pitch extraction tool using DSM GeoTIFF input.
 - Stage 1 polygon sidecar JSON for per-building pitch extraction.
 
-### Completed (recently)
+### In Progress
 
-- Stage 2 cool roof delta calculation with per-building irradiance join.
-  Physics: `energy_saved = GHI * footprint_area * (absorptance_before - 0.20)`.
-  Irradiance priority: BARRA2 (dormant, needs NCI) → user CSV → NASA POWER
-  (de-facto source, keyless, cached) → Melbourne default constant. Output
-  carries an `irradiance_source` column. The ERA5/CDS fallback was removed.
-- Stage 3 thermal modelling: per-building R_roof inferred from building
-  attributes → heat-transfer fraction `U/(U+h_out)` → cooling load →
-  electricity saved → CO2. See `DECISION_LOG.md` for the design rationale.
-- Tracked sample fixture `data/samples/stage1_carlton.parquet` so a fresh
-  clone runs Stages 2-3 with no API keys.
+- Stage 2 cool roof delta calculation.
+- Per-building join between Stage 1 outputs and irradiance data.
+- Cool roof physics calculation:
+  `energy_saved = GHI * footprint_area * (absorptance_before - 0.20)`.
+- Support for user-provided irradiance CSV files.
+- BARRA2/ERA5 climate-data path is present but still needs reliable access and
+  integration validation.
 
-### Next Priorities (ranked — keep in sync with README Roadmap)
+### Next Priorities
 
-1. Validate Stage 3 constants (`H_OUTSIDE`, `COOLING_FRACTION`, COP, R_roof
-   proxy table) against Stuart's NatHERS runs / AS-NZS 4859.1, and publish a
-   sensitivity analysis. All constants live in `config/settings.py`.
-2. Validate the HSV classifier by running the Gemini experiment
-   (`tools.run_gemini_osm_experiment`) on a stratified sample of 150-300
-   buildings per suburb and reporting agreement rates.
-3. Replace rectangular bboxes with true ABS SA2 suburb polygons and an
-   `inside_suburb` flag; report in-boundary totals.
-4. Wire measured DSM pitch into Stage 2 (it currently writes an orphaned
-   `stage1_{suburb}_with_pitch.parquet` no stage reads), or formally de-scope
-   it — pitch only affects roof-area/costing, not energy numbers.
-5. Expand to 3+ suburbs and use `tools.compare_suburbs` for FYP reporting.
-6. Connect real BARRA2 GHI when NCI project ob53 access is available
-   (flip `BARRA2_ENABLED` in `config/settings.py`).
-7. Move remaining in-module constants (absorptance tables in
-   `cool_roof_calculator.py`, assumed-pitch table in Stage 1 pipeline) into
-   `config/settings.py` for sensitivity sweeps.
+1. Replace assumed roof pitch with measured pitch from 1 m DSM where available.
+2. Connect real annual GHI data from BARRA2 or a prepared irradiance CSV.
+3. Add Stage 3 thermal modelling to translate absorbed solar reduction into
+   estimated building cooling electricity savings.
+4. Improve roof material classification and validate against local statistics.
+5. Expand suburb coverage and keep suburb metadata tied to ABS SA2 where
+   practical.
 
 ## Architecture Rules
 
@@ -219,8 +205,8 @@ Use this as the quick checklist when Ryan asks "what APIs/data do we use?"
 | Satellite imagery | Google Maps Static API | `GOOGLE_MAPS_API_KEY` in `.env` | Active tile download |
 | Building footprints | OpenStreetMap Overpass API | No key | Active Stage 1 footprint source |
 | Building footprints supplement | VicMap BUILDING_POLYGON | Manual SHP download from DataShare | Optional merge |
-| Irradiance (active) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | De-facto Stage 2 source |
-| Irradiance (future) | BARRA2 via NCI THREDDS/OPeNDAP | NCI project ob53 access required | Dormant until access lands |
+| Irradiance | BARRA2 via NCI THREDDS/OPeNDAP | NCI/data access required | Intended Stage 2 source |
+| Irradiance fallback | ERA5 / CDS | `CDS_API_KEY` if used | Fallback path in code |
 | DSM pitch data | ELVIS 1 m LiDAR | Manual download, free registration | Recommended pitch source |
 | DSM inner-city fallback | City of Melbourne Open Data DSM | Manual download | Useful for inner suburbs |
 | DSM coarse fallback | OpenTopography COP30 | `OPENTOPO_API_KEY` in `.env` | Programmatic fallback |
@@ -259,51 +245,26 @@ classifier_confidence`
 - Flags: `ok`, `flat`, `unrealistic`, `too_few_points`, `ransac_failed`,
   `extraction_failed`.
 
-### Stage 2 - Working
+### Stage 2 - In Progress
 
 Stage 2 joins Stage 1 buildings to annual irradiance and computes per-building
 cool roof benefit.
 
 Input expectations:
 
-- Stage 1 parquet for the suburb (a tracked Carlton sample lives in
-  `data/samples/` — copy it to `data/output/` to run without Stage 1).
+- Stage 1 parquet for the suburb.
 - Optional irradiance CSV with `lat, lon, annual_ghi_kwh_m2`.
 
 Added output columns:
 
-`annual_ghi_kwh_m2, irradiance_source, absorptance_before,
-energy_incident_kwh_yr, energy_saved_kwh_yr, co2_saved_kg_yr,
-absorptance_confidence`
+`annual_ghi_kwh_m2, absorptance_before, roof_surface_area_m2,
+energy_saved_kwh_yr, co2_saved_kg_yr`
 
 Important limitation:
 
-`energy_saved_kwh_yr` means reduced absorbed solar energy, not building
-electricity savings — Stage 3 handles thermal transfer and HVAC efficiency.
-`energy_incident` deliberately uses footprint area (GHI is horizontal);
-roof surface area is only for material/costing.
-
-### Stage 3 - Working
-
-Stage 3 converts the Stage 2 absorbed-solar delta into cooling electricity
-savings via a per-building chain:
-
-`R_roof (inferred from building_type/roof_material/levels) → U/(U+h_out)
-fraction → heat to interior → cooling load (×0.70) → electricity (/COP) → CO2`
-
-Added output columns:
-
-`roof_r_value_m2k, heat_transfer_fraction, heat_to_interior_kwh_yr,
-cooling_load_reduction_kwh_yr, electricity_saved_kwh_yr,
-co2_electricity_saved_kg_yr`
-
-Important limitation:
-
-Stage 3 re-scales the Stage 2 delta by insulation-derived fractions — the
-conductive term cancels in the model, so it is not an independent physics
-engine. Constants (`H_OUTSIDE`, `COOLING_FRACTION`, COP, R_roof table) are
-unvalidated Melbourne defaults in `config/settings.py`; validating them is
-the #1 roadmap item.
+`energy_saved_kwh_yr` currently means reduced absorbed solar energy, not
+building electricity savings. Stage 3 should handle thermal transfer and HVAC
+efficiency.
 
 ## QA Ticket Workflow
 

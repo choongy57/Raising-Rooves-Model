@@ -11,13 +11,9 @@ for user-facing setup, commands, and project explanation.
 ## Project State
 
 - Stage 1 roof segmentation: complete.
-- Roof pitch extraction from DSM: complete as a standalone tool. Its output
-  (`stage1_{suburb}_with_pitch.parquet`) is NOT yet consumed by Stage 2/3.
-- Stage 2 irradiance and cool roof delta: working. NASA POWER is the de-facto
-  irradiance source (free, keyless, ~50 km); BARRA2 is dormant until NCI
-  project ob53 access lands. The ERA5/CDS fallback was removed.
-- Stage 3 thermal modelling: working — per-building R_roof heat-ingress model
-  (see `DECISION_LOG.md`). Constants still need validation against NatHERS.
+- Roof pitch extraction from DSM: complete as a standalone tool.
+- Stage 2 irradiance and cool roof delta: in progress.
+- Stage 3 thermal modelling: planned.
 - Persistence: no database; CSV, Parquet, JSON, and images under `data/`.
 - Team: Ryan, Seamus, Angus, Flynn, Maggie, Gabrielle.
 - Supervisor: Stuart.
@@ -81,20 +77,20 @@ for user-facing setup, commands, and project explanation.
 - Stage 1 CSV, Parquet, polygon sidecar, and annotated PNG outputs.
 - DSM-based roof pitch extraction tool.
 
-### Done (recently)
+### In Progress
 
-- Stage 2 annual irradiance join (NASA POWER, user CSV, or default constant).
-- Cool roof delta calculation with per-building absorptance estimates.
-- Stage 3 thermal model: per-building R_roof → heat-transfer fraction →
-  cooling load → electricity saved → CO2.
+- Stage 2 annual irradiance join.
+- Cool roof delta calculation.
+- Validation of BARRA2/ERA5 climate-data ingestion.
+- Cleaner output interpretation for policy/reporting use.
 
 ### Next
 
-The canonical ranked roadmap lives in `README.md` ("Roadmap — What Needs To
-Change For The Final Model") — do not duplicate it here. Top three for
-orientation: validate Stage 3 constants (NatHERS + sensitivity analysis),
-validate the HSV classifier via a sampled Gemini experiment run, and adopt
-true ABS SA2 suburb boundaries.
+1. Use measured pitch wherever DSM coverage exists.
+2. Connect real annual GHI through BARRA2 or prepared CSVs.
+3. Add Stage 3 thermal modelling for cooling electricity savings.
+4. Improve material classification accuracy.
+5. Expand and validate suburb coverage.
 
 ## Run Commands
 
@@ -147,8 +143,8 @@ python -m pytest tests/
 | Satellite imagery | Google Maps Static API | `GOOGLE_MAPS_API_KEY` in `.env` | Active |
 | Building footprints | OpenStreetMap Overpass API | No key | Active |
 | Building footprints supplement | VicMap BUILDING_POLYGON | Manual SHP download | Optional |
-| Irradiance (active) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | Active |
-| Irradiance (future) | BARRA2 via NCI THREDDS/OPeNDAP | NCI project ob53 access required | Dormant |
+| Irradiance | BARRA2 via NCI THREDDS/OPeNDAP | NCI/data access required | Intended |
+| Irradiance fallback | ERA5 / CDS | `CDS_API_KEY` if used | Fallback |
 | DSM pitch | ELVIS 1 m LiDAR | Manual download | Recommended |
 | DSM inner-city pitch | City of Melbourne Open Data DSM | Manual download | Useful for inner suburbs |
 | DSM coarse fallback | OpenTopography COP30 | `OPENTOPO_API_KEY` in `.env` | Optional fallback |

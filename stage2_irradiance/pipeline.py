@@ -3,14 +3,13 @@ Stage 2 pipeline orchestrator for the Raising Rooves pipeline.
 
 Two responsibilities:
   1. Climate data retrieval: fetch monthly irradiance + temperature stats
-     from BARRA2. Saved as stage2_{suburb}_climate.parquet.
+     from BARRA2 (preferred) or ERA5 (fallback). Saved as stage2_{suburb}_climate.parquet.
 
   2. Cool roof delta: join Stage 1 buildings with annual GHI, compute per-building
      energy saving and CO2 reduction. Saved as stage2_{suburb}.parquet / .csv.
 
 Irradiance source priority:
-  a. BARRA2 via OPeNDAP — gated behind BARRA2_ENABLED (False until NCI
-     project ob53 access lands); NASA POWER is the de-facto source today.
+  a. BARRA2 via OPeNDAP (requires NCI access — connect when available)
   b. CSV file provided via --irradiance-file (lat, lon, annual_ghi_kwh_m2)
   c. NASA POWER REST API (free, no key — ~50 km resolution, cached per suburb)
   d. Melbourne default GHI constant (~1850 kWh/m²/yr) — last-resort placeholder
@@ -21,17 +20,13 @@ from pathlib import Path
 import pandas as pd
 from tqdm import tqdm
 
-from config.settings import (
-    BARRA2_ENABLED,
-    BARRA2_VARIABLES,
-    MELBOURNE_DEFAULT_GHI_KWH_M2_YR,
-    OUTPUT_DIR,
-)
+from config.settings import BARRA2_VARIABLES, ERA5_VARIABLES, MELBOURNE_DEFAULT_GHI_KWH_M2_YR, OUTPUT_DIR
 from config.suburbs import get_suburb
 from shared.file_io import ensure_dir, load_stage_input, save_parquet, save_stage_outputs
 from shared.logging_config import setup_logging
 from stage2_irradiance.barra_client import fetch_all_climate_data
 from stage2_irradiance.cool_roof_calculator import calculate_building_benefit
+from stage2_irradiance.era5_fallback import fetch_era5_data
 from stage2_irradiance.irradiance_loader import (
     load_irradiance_csv,
     load_nasa_power_irradiance,
@@ -51,17 +46,24 @@ from stage2_irradiance.temperature_processor import (
 logger = setup_logging("stage2_pipeline")
 
 
+def _annual_ghi_from_monthly(irradiance_summary: dict) -> float | None:
+    """Convert BARRA2/ERA5 monthly summary to annual kWh/m²/yr, or None if unavailable."""
+    daily = irradiance_summary.get("annual_mean_ghi_kwh_m2_day")
+    if daily:
+        return round(daily * 365, 1)
+    return None
+
+
 def run_stage2_climate(
     suburb_name: str,
     start_year: int = 2010,
     end_year: int = 2020,
 ) -> pd.DataFrame:
     """
-    Fetch monthly climate statistics for a suburb from BARRA2.
+    Fetch monthly climate statistics for a suburb from BARRA2 (ERA5 fallback).
 
     Returns a DataFrame with monthly irradiance and temperature stats.
-    Saved to stage2_{suburb}_climate.parquet. Returns an empty DataFrame
-    when BARRA2 is unreachable (no NCI access).
+    Saved to stage2_{suburb}_climate.parquet.
     """
     suburb = get_suburb(suburb_name)
     suburb_key = suburb.key
@@ -73,7 +75,7 @@ def run_stage2_climate(
     logger.info("=" * 60)
 
     # ── Fetch climate data ────────────────────────────────────────────────
-    logger.info("Fetching climate data from BARRA2...")
+    logger.info("Fetching climate data (BARRA2 first, ERA5 fallback)...")
     climate_data = fetch_all_climate_data(lat, lon, start_year, end_year)
 
     irradiance_ds = climate_data.get("solar_irradiance")
@@ -82,9 +84,14 @@ def run_stage2_climate(
     temperature_var = BARRA2_VARIABLES["temperature_2m"]
 
     if irradiance_ds is None:
-        logger.warning("BARRA2 irradiance unavailable (NCI access required).")
+        logger.warning("BARRA2 irradiance unavailable — falling back to ERA5...")
+        irradiance_ds = fetch_era5_data("solar_irradiance", lat, lon, start_year, end_year)
+        irradiance_var = ERA5_VARIABLES["solar_irradiance"]
+
     if temperature_ds is None:
-        logger.warning("BARRA2 temperature unavailable (NCI access required).")
+        logger.warning("BARRA2 temperature unavailable — falling back to ERA5...")
+        temperature_ds = fetch_era5_data("temperature_2m", lat, lon, start_year, end_year)
+        temperature_var = ERA5_VARIABLES["temperature_2m"]
 
     # ── Process stats ─────────────────────────────────────────────────────
     irradiance_stats = compute_irradiance_stats(irradiance_ds, irradiance_var, suburb.name)
@@ -152,7 +159,7 @@ def run_stage2(
     and compute per-building cool roof benefit.
 
     Irradiance source priority:
-      1. BARRA2 via OPeNDAP (only when BARRA2_ENABLED — run_stage2_climate)
+      1. BARRA2 via OPeNDAP (if accessible — run_stage2_climate)
       2. CSV file at irradiance_file (lat, lon, annual_ghi_kwh_m2)
       3. NASA POWER REST API (free, no key — cached to data/raw/nasa_power/)
       4. Melbourne default GHI constant (~1850 kWh/m²/yr)
@@ -188,26 +195,20 @@ def run_stage2(
     irradiance_source: str = "unknown"
     irradiance_df: pd.DataFrame | None = None
 
-    # Priority 1: BARRA2 via OPeNDAP. Gated behind BARRA2_ENABLED because
-    # without NCI access every monthly fetch fails after a network round-trip
-    # (hundreds of doomed calls per run). Flip the flag in config/settings.py
-    # when ob53 access lands.
+    # Priority 1: BARRA2/ERA5 via OPeNDAP (requires NCI VPN — fails gracefully)
     annual_ghi_scalar: float | None = None
-    if BARRA2_ENABLED:
-        try:
-            climate_df = run_stage2_climate(suburb_name, start_year, end_year)
-            if not climate_df.empty and "mean_ghi_kwh_m2_day" in climate_df.columns:
-                daily_mean = climate_df["mean_ghi_kwh_m2_day"].mean()
-                annual_ghi_scalar = round(daily_mean * 365, 1)
-                irradiance_source = "barra2"
-                logger.info(
-                    "Irradiance source: BARRA2 — annual GHI %.0f kWh/m²/yr",
-                    annual_ghi_scalar,
-                )
-        except Exception as e:
-            logger.debug("BARRA2 not available: %s", e)
-    else:
-        logger.debug("BARRA2 disabled (BARRA2_ENABLED=False) — skipping to CSV/NASA POWER.")
+    try:
+        climate_df = run_stage2_climate(suburb_name, start_year, end_year)
+        if not climate_df.empty and "mean_ghi_kwh_m2_day" in climate_df.columns:
+            daily_mean = climate_df["mean_ghi_kwh_m2_day"].mean()
+            annual_ghi_scalar = round(daily_mean * 365, 1)
+            irradiance_source = "barra2_era5"
+            logger.info(
+                "Irradiance source: BARRA2/ERA5 — annual GHI %.0f kWh/m²/yr",
+                annual_ghi_scalar,
+            )
+    except Exception as e:
+        logger.debug("BARRA2/ERA5 not available: %s", e)
 
     if annual_ghi_scalar is None:
         # Priority 2: User-supplied CSV

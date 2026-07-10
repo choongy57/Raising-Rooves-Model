@@ -21,13 +21,18 @@ TILES_DIR = RAW_DIR / "tiles"
 BARRA_DIR = RAW_DIR / "barra"
 NASA_POWER_CACHE_DIR = RAW_DIR / "nasa_power"
 PROCESSED_DIR = DATA_DIR / "processed"
+MASKS_DIR = PROCESSED_DIR / "masks"
+ROOF_AREAS_DIR = PROCESSED_DIR / "roof_areas"
 OUTPUT_DIR = DATA_DIR / "output"
 LOGS_DIR = PROJECT_ROOT / "logs"
+RESEARCH_DIR = PROJECT_ROOT / "research" / "findings"
 
 # ── API Keys (from .env) ────────────────────────────────────────────────────
 
 GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+HF_TOKEN = os.getenv("HF_TOKEN", "")
+CDS_API_KEY = os.getenv("CDS_API_KEY", "")
 
 # ── Google Maps Static API ───────────────────────────────────────────────────
 
@@ -51,12 +56,6 @@ DEFAULT_MAP_TYPE = "satellite"
 # NCI account required. Monash students: register at https://my.nci.org.au
 # and ask your supervisor (Stuart) for project ob53 access.
 
-# Master switch for the BARRA2 OPeNDAP path. Without NCI project ob53 access
-# every fetch fails (2 variables x years x 12 months of doomed, un-timeboxed
-# network calls), so the path stays off until access lands. Flip to True once
-# an NCI account with ob53 is available.
-BARRA2_ENABLED = False
-
 BARRA2_THREDDS_BASE = "https://thredds.nci.org.au/thredds/dodsC/ob53"
 BARRA2_CATALOG_BASE = "https://thredds.nci.org.au/thredds/catalog/ob53"
 
@@ -79,8 +78,16 @@ BARRA2_VARIABLES = {
     "precipitation": "pr",
 }
 
+# ── ERA5 Fallback ────────────────────────────────────────────────────────────
+
+ERA5_VARIABLES = {
+    "solar_irradiance": "ssrd",  # surface solar radiation downwards (J/m²)
+    "temperature_2m": "t2m",  # 2m temperature (K)
+}
+
 # ── Melbourne Defaults ───────────────────────────────────────────────────────
 
+MELBOURNE_CENTRE = (-37.8136, 144.9631)  # lat, lon
 MELBOURNE_BBOX = (-38.1, 144.5, -37.5, 145.5)  # south, west, north, east
 
 # ── Roof Material Priors (CSR VIC data) ──────────────────────────────────────

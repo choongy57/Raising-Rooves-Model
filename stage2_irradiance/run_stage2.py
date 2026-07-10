@@ -5,8 +5,7 @@ Usage:
     # With an irradiance CSV (recommended until BARRA2 is connected):
     python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data/raw/barra/carlton_ghi.csv
 
-    # Without irradiance file — fetches NASA POWER automatically (no key),
-    # falling back to the Melbourne default GHI (~1850 kWh/m²/yr):
+    # Without irradiance file — uses Melbourne default GHI (~1850 kWh/m²/yr):
     python -m stage2_irradiance.run_stage2 --suburb "Carlton"
 
     # Debug mode:
@@ -45,8 +44,7 @@ def main():
         default=None,
         help=(
             "CSV with irradiance grid: lat, lon, annual_ghi_kwh_m2. "
-            "If omitted, NASA POWER is fetched automatically (no key), "
-            "falling back to the Melbourne default GHI (~1850 kWh/m²/yr)."
+            "If omitted, uses Melbourne default GHI (~1850 kWh/m²/yr)."
         ),
     )
     parser.add_argument(

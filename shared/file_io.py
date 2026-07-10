@@ -100,20 +100,12 @@ def load_stage_input(stage: int, suburb_key: str) -> Optional[pd.DataFrame]:
 
     Returns None (with an error log) if the file does not exist.
     """
-    from config.settings import DATA_DIR, OUTPUT_DIR
+    from config.settings import OUTPUT_DIR
     path = OUTPUT_DIR / f"stage{stage}_{suburb_key}.parquet"
     if not path.exists():
-        sample = DATA_DIR / "samples" / f"stage{stage}_{suburb_key}.parquet"
-        if sample.exists():
-            logger.error(
-                "Stage %d output not found: %s — a tracked sample exists at %s; "
-                "copy it into data/output/ to run without Stage %d (see README Quickstart).",
-                stage, path, sample, stage,
-            )
-        else:
-            logger.error(
-                "Stage %d output not found: %s — run Stage %d first.",
-                stage, path, stage,
-            )
+        logger.error(
+            "Stage %d output not found: %s — run Stage %d first.",
+            stage, path, stage,
+        )
         return None
     return pd.read_parquet(path)

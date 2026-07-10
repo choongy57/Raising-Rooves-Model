@@ -119,10 +119,7 @@ BARRA2 (NCI OPeNDAP) → user-supplied CSV → NASA POWER REST API → Melbourne
 - `ssrd` — surface solar radiation downwards (J/m²). Converted to kWh.
 
 **How it's used:**
-- *(Update 2026-07: the `stage2_irradiance/era5_fallback.py` module was
-  removed from the pipeline — it required a CDS key nobody had and carried a
-  J/m²-as-W/m² unit risk. BARRA2 remains in code, gated off until NCI access.)*
-- Historically: code-level fallback in `stage2_irradiance/era5_fallback.py`, CDS API key required.
+- Code-level fallback in `stage2_irradiance/era5_fallback.py`. CDS API key required.
 - Not currently active in the pipeline — NASA POWER is preferred as the interim fallback due to simpler access.
 
 **Methodological note:** ERA5 is widely used in global energy studies (Pfenninger & Staffell 2016; Gruber et al. 2019) but lacks Australian-specific calibration. BARRA2 is derived from ERA5 boundary conditions but adds BOM assimilation — so BARRA2 strictly dominates ERA5 for this application.
