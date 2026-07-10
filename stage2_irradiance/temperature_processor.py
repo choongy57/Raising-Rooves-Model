@@ -1,7 +1,7 @@
 """
 Temperature data processor for the Raising Rooves pipeline.
 
-Processes temperature data from BARRA2 or ERA5 into metrics relevant
+Processes temperature data from BARRA2 into metrics relevant
 to cool roof modelling:
   - Monthly and annual mean temperature
   - Cooling Degree Days (CDD) — proxy for cooling energy demand
@@ -18,7 +18,7 @@ from shared.logging_config import setup_logging
 
 logger = setup_logging("temperature_processor")
 
-# BARRA2 and ERA5 store temperature in Kelvin
+# BARRA2 stores temperature in Kelvin
 KELVIN_OFFSET = 273.15
 
 

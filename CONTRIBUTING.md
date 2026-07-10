@@ -33,11 +33,24 @@ source .venv/bin/activate
 pip install -r requirements.txt
 
 # 4. Set up environment variables
+# Windows (PowerShell):
+Copy-Item .env.example .env
+# macOS / Linux:
 cp .env.example .env
 # Then open .env and fill in the keys you need for your task
 ```
 
 > **Never commit `.env` or paste API keys into chat, commits, or screenshots.**
+
+### Your first output (no keys needed)
+
+Before chasing API keys, prove your setup works using the tracked sample in
+`data/samples/`: follow the **Quickstart (no API keys needed)** section at the
+top of `README.md` (canonical commands), then open
+`data/output/stage3_carlton_report.html` in a browser.
+
+If that works, your environment is good — you only need API keys for the
+specific stage you're working on (see the table below).
 
 ---
 
@@ -46,10 +59,12 @@ cp .env.example .env
 | Variable | What it's for | Who needs it |
 |---|---|---|
 | `GOOGLE_MAPS_API_KEY` | Satellite tile download (Stage 1) | Stage 1 |
+| `GEMINI_API_KEY` | Gemini roof-assessment experiment (HSV validation) | Experiment only; free tier at https://aistudio.google.com/app/apikey |
 | `OPENTOPO_API_KEY` | COP30 DSM fallback for pitch extraction | Pitch tool |
-| `CDS_API_KEY` | ERA5 climate data fallback | Stage 2 fallback |
 | `GOOGLE_SHEET_ID` | QA ticket tracker | QA / test monitor |
-| `GWS_CREDS_FILE` | Google Sheets OAuth credential path | QA / test monitor |
+| `GWS_CREDS_FILE` | Google Sheets OAuth credential path (Windows: use a full path, `~` is not expanded) | QA / test monitor |
+
+Stage 2 needs no key at all — irradiance comes from NASA POWER automatically.
 
 NCI THREDDS access for BARRA2 does not use a key — register at https://my.nci.org.au and request project `ob53` access.
 

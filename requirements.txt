@@ -3,7 +3,6 @@ numpy>=1.24
 pandas>=2.0
 geopandas>=0.13
 shapely>=2.0
-scipy>=1.11
 pyproj>=3.6
 
 # Elevation / DSM processing
@@ -14,13 +13,12 @@ requests>=2.31
 Pillow>=10.0
 opencv-python>=4.8
 
-# Gemini Vision API (roof segmentation — replaces SAM3/Colab)
+# Gemini Vision API (HSV classifier validation experiment)
 google-genai>=1.0
 
-# Climate data
+# Climate data (BARRA2 via NCI THREDDS/OPeNDAP; requires NCI access)
 xarray>=2024.1
 netCDF4>=1.6
-cdsapi>=0.7
 
 # Data storage
 pyarrow>=14.0
@@ -28,7 +26,6 @@ pyarrow>=14.0
 # Utilities
 python-dotenv>=1.0
 tqdm>=4.66
-colorlog>=6.8
 
 # Google Sheets ticket tracker
 gspread>=6.0
@@ -36,11 +33,7 @@ google-auth>=2.0
 
 # Visualisation
 folium>=0.15
+matplotlib>=3.8
 
 # Dev / Testing
 pytest>=7.4
-jupyter>=1.0
-matplotlib>=3.8
-
-# Note: SAM3/Colab workflow is superseded by Gemini Vision API.
-# SAM3 is no longer required for Stage 1.

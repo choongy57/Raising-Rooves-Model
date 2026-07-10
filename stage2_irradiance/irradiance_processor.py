@@ -1,7 +1,7 @@
 """
 Solar irradiance data processor for the Raising Rooves pipeline.
 
-Processes raw irradiance data from BARRA2 or ERA5 into useful metrics
+Processes raw irradiance data from BARRA2 into useful metrics
 for cool roof modelling:
   - Annual and monthly mean Global Horizontal Irradiance (GHI)
   - Peak irradiance values
@@ -48,13 +48,11 @@ def compute_irradiance_stats(
         mean_w_m2 = float(group.mean().values)
         peak_w_m2 = float(group.max().values)
 
-        # Convert W/m² average to daily kWh/m²/day
-        # Assuming the value represents average flux, and ~12 effective sun hours for monthly mean
-        # More precisely: daily_kwh = mean_W * peak_sun_hours / 1000
-        # For Melbourne: ~5.5 peak sun hours summer, ~2.5 winter
-        # Simple approximation: mean_W * 24 * fraction_of_day / 1000
-        # BARRA2 gives instantaneous or averaged flux, so we approximate:
-        mean_kwh_m2_day = mean_w_m2 * 24 / 1000  # rough conversion
+        # Convert mean flux to daily energy. BARRA2 rsds is a 24-hour mean
+        # flux in W/m² (nights included), so daily energy is exactly
+        # mean_W × 24 h / 1000 = kWh/m²/day. Do NOT use peak-sun-hours here —
+        # that would double-count the day/night averaging.
+        mean_kwh_m2_day = mean_w_m2 * 24 / 1000
 
         records.append({
             "suburb": suburb_name,

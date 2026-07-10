@@ -6,13 +6,38 @@ cool roof intervention benefits across Melbourne suburbs.
 Team: Ryan, Seamus, Angus, Flynn, Maggie, Gabrielle  
 Supervisor: Stuart
 
+## Quickstart (no API keys needed)
+
+New to the project? You can see real output in about five minutes. A small
+Stage 1 fixture for Carlton is tracked in git under `data/samples/`:
+
+```bash
+pip install -r requirements.txt
+
+# Copy the sample Stage 1 output into place
+# PowerShell:
+Copy-Item data/samples/stage1_carlton.parquet data/output/
+# macOS/Linux:
+cp data/samples/stage1_carlton.parquet data/output/
+
+# Irradiance comes from NASA POWER automatically (free, no key)
+python -m stage2_irradiance.run_stage2 --suburb Carlton
+python -m stage3_thermal.run_stage3 --suburb Carlton
+python -m tools.visualise_results --suburb Carlton
+```
+
+Running Stage 1 yourself (fresh tile downloads) needs a `GOOGLE_MAPS_API_KEY` —
+see Setup below.
+
 ## Current Status
 
 - Stage 1 roof segmentation: working.
-- Roof pitch extraction from DSM: working as a standalone tool.
+- Roof pitch extraction from DSM: working as a standalone tool. Note: its
+  output is NOT yet consumed by Stage 2/3 — see Known Limitations.
 - Stage 2 irradiance and cool roof delta: working. NASA POWER provides real GHI
-  automatically (no key needed) as the first fallback when BARRA2 is unavailable.
-- Stage 3 thermal modelling: working.
+  automatically (no key needed); BARRA2 is the intended future source once NCI
+  access is available.
+- Stage 3 thermal modelling: working (per-building R_roof heat-ingress model).
 - Persistence: no application database. Outputs are CSV, Parquet, JSON, PNG,
   HTML, and cached raw files under `data/`.
 
@@ -63,6 +88,8 @@ Optional pitch improvement
         v
 Stage 2: irradiance + cool roof delta
   try BARRA2 → user CSV → NASA POWER → Melbourne default GHI
+  (BARRA2 gated off via BARRA2_ENABLED=False in config/settings.py until
+   NCI access lands; NASA POWER is the de-facto source)
   calculate energy/co2 reduction
         |
         v
@@ -82,9 +109,9 @@ tools.visualise_results
   choropleth map, summary charts, HTML report
         |
         v
-data/output/stage2_{suburb}_map.html
-data/output/stage2_{suburb}_summary.png
-data/output/stage2_{suburb}_report.html
+data/output/stage3_{suburb}_map.html      (stage2_ prefix if only Stage 2 exists)
+data/output/stage3_{suburb}_summary.png
+data/output/stage3_{suburb}_report.html
 ```
 
 ## Data Needed
@@ -98,9 +125,13 @@ data/output/stage2_{suburb}_report.html
 ### Strongly Recommended
 
 - Local footprint index:
-  `data/raw/footprints/buildings_index.gpkg`
+  `data/raw/footprints/buildings_index.gpkg` (~540 MB, built locally — see below)
 - Source footprint file for rebuilding the index:
-  `data/raw/footprints/melbourne_overture.geojsonl`
+  `data/raw/footprints/melbourne_overture.geojsonl` (~1 GB). This is a
+  line-delimited GeoJSON export of Overture Maps / Microsoft AU building
+  footprints for the Melbourne area. It is too large for git — ask a teammate
+  for a copy (or the built `.gpkg` directly), then build the index once with:
+  `python -m tools.build_footprint_index`
 - Real irradiance CSV with columns:
   `lat, lon, annual_ghi_kwh_m2`
 - DSM GeoTIFF for measured roof pitch, ideally 1 m LiDAR.
@@ -109,15 +140,25 @@ data/output/stage2_{suburb}_report.html
 
 ### Optional API Keys
 
-- `CDS_API_KEY` for ERA5 fallback.
 - `OPENTOPO_API_KEY` for programmatic COP30 DSM fallback.
+- `GEMINI_API_KEY` for the opt-in Gemini roof-assessment experiment (free tier
+  at https://aistudio.google.com/app/apikey).
 
 ## Setup
 
 ```bash
 pip install -r requirements.txt
+
+# Copy the env template, then fill in your keys
+# PowerShell:
+Copy-Item .env.example .env
+# macOS/Linux:
 cp .env.example .env
 ```
+
+Optional: `pip install -e .` installs the project as a package and provides
+`rooves-stage1`, `rooves-stage2`, `rooves-stage3`, `rooves-visualise`, etc. as
+console commands equivalent to the `python -m ...` forms.
 
 Add your Google Maps Static API key to `.env`:
 
@@ -268,8 +309,9 @@ map PNG.
 ## Running Stage 2
 
 ```bash
-# Uses BARRA2 if available; otherwise NASA POWER (auto, no key needed);
-# otherwise user CSV; otherwise Melbourne default GHI (~1850 kWh/m²/yr)
+# Irradiance: user CSV if given; otherwise NASA POWER (auto, no key needed);
+# otherwise Melbourne default GHI (~1850 kWh/m²/yr). BARRA2 runs first only
+# when BARRA2_ENABLED=True in config/settings.py (needs NCI access).
 python -m stage2_irradiance.run_stage2 --suburb "Clayton"
 
 # Use a prepared irradiance grid CSV
@@ -371,20 +413,32 @@ Replacing it with ABS/VicMap construction-era data is a future improvement.
 
 ## Visualisation
 
-Produces an interactive map, summary charts, and HTML report from Stage 2 output.
+Produces an interactive map, summary charts, and HTML report. Uses Stage 3
+output when it exists, otherwise Stage 2 (`--stage2-only` forces Stage 2).
 
 ```bash
 python -m tools.visualise_results --suburb "Carlton"
+python -m tools.visualise_results --suburb "Carlton" --stage2-only
 python -m tools.visualise_results --suburb "Carlton" --debug
 ```
 
-Outputs written to `data/output/`:
+Outputs written to `data/output/` (prefix is `stage3_` or `stage2_` matching
+the data used):
 
 | File | Description |
 | --- | --- |
-| `stage2_{suburb}_map.html` | Interactive choropleth — building polygons coloured by energy saved |
-| `stage2_{suburb}_summary.png` | 2×2 chart panel (distribution, by material, counts, summary stats) |
-| `stage2_{suburb}_report.html` | HTML report with KPI tiles, embedded chart, and map link |
+| `stage3_{suburb}_map.html` | Interactive choropleth — buildings coloured by energy saved |
+| `stage3_{suburb}_summary.png` | 2×2 chart panel (distribution, by material, counts, summary stats) |
+| `stage3_{suburb}_report.html` | HTML report with KPI tiles, embedded chart, and map link |
+
+### Comparing Suburbs
+
+For FYP reporting across every suburb with outputs:
+
+```bash
+python -m tools.compare_suburbs            # best available stage per suburb
+python -m tools.compare_suburbs --stage 2  # force Stage 2 data
+```
 
 ## Running The Full Pipeline
 
@@ -402,8 +456,9 @@ There is no fixed 12 by 12 grid assumption in the code.
 
 Current behaviour:
 
-- Direct BARRA2/ERA5 path samples the nearest climate point to the suburb
-  centroid and applies that scalar to all buildings.
+- Direct BARRA2 path samples the nearest climate point to the suburb
+  centroid and applies that scalar to all buildings. This path is dormant
+  until NCI project access is available.
 - NASA POWER (auto-fetched fallback): samples a grid across the suburb bbox at
   0.1° spacing and caches results under `data/raw/nasa_power/`. At ~50 km
   resolution, most Melbourne suburbs will return one or a few data points.
@@ -482,10 +537,11 @@ Stage 1 validation:
 - 445 unclassified roofs
 - Source mix: 2,827 `osm` rows and 5,197 `msft` supplement rows
 
-Stage 2 was run without a Clayton irradiance CSV. BARRA2/ERA5 was unavailable.
-NASA POWER returned a measured GHI for Carlton of approximately 1,646 kWh/m²/yr
-(vs the 1,850 kWh/m²/yr Melbourne default — 11% lower). Results are cached
-under `data/raw/nasa_power/`.
+Stage 2 was run without a Clayton irradiance CSV. BARRA2 was unavailable (no
+NCI access). NASA POWER returned a measured GHI of approximately
+1,646 kWh/m²/yr (a Carlton-area value also representative of Clayton at NASA
+POWER's ~50 km resolution; 11% lower than the 1,850 kWh/m²/yr Melbourne
+default). Results are cached under `data/raw/nasa_power/`.
 
 Outputs:
 
@@ -501,9 +557,16 @@ conclusions.
 2. Current canonical outputs can include tile-buffer buildings outside the bbox.
 3. OSM Overpass can fail or reject large bbox queries; local footprints are
    needed for reliable reruns.
-4. HSV roof classification is heuristic and should be validated.
-5. Assumed pitch should be replaced with DSM-derived pitch where possible.
-6. BARRA2/ERA5 access is not yet reliable in the current pipeline.
+4. HSV roof classification is heuristic and should be validated (the Gemini
+   experiment exists for exactly this — see Experimental Gemini + OSM section).
+5. Measured DSM pitch is NOT consumed by Stage 2/3: `tools.extract_pitch`
+   writes a separate `stage1_{suburb}_with_pitch.parquet` that no stage reads.
+   Stage 2 always uses the assumed `pitch_deg` from Stage 1. Note pitch only
+   affects `roof_surface_area_m2` (costing), not energy numbers, which
+   correctly use footprint area with horizontal irradiance.
+6. BARRA2 access requires an NCI account with project ob53; until then the
+   real irradiance source is NASA POWER at ~50 km resolution, which smears one
+   GHI value across a whole suburb.
 7. Stage 3 roof insulation `R_roof` is inferred per building from
    `building_type` / `roof_material` (no construction-age data exists), then
    drives the heat-transfer fraction via `U/(U+h_out)`. COP and cooling
@@ -515,27 +578,44 @@ conclusions.
    than individual roof blocks. Those roofs need a better authoritative source
    or an explicit computer-vision/manual correction workflow.
 
-## What Needs To Change For The Final Model
+## Roadmap — What Needs To Change For The Final Model
+
+Ranked by impact on the defensibility of the final FYP numbers.
 
 ### High Priority
 
-- Add true suburb polygon boundaries and an `inside_suburb`/intersection-area
-  rule.
-- Draw the suburb boundary on annotations.
-- Produce a presentation annotation that highlights in-boundary buildings and
-  mutes or hides buffer buildings.
-- Use measured DSM pitch for final suburbs.
-- Connect real annual GHI from BARRA2 when NCI access is available.
+1. **Validate Stage 3 constants.** Every headline electricity-saving number is
+   scaled by unvalidated Melbourne defaults (`H_OUTSIDE`, `COOLING_FRACTION`,
+   COP, the R_roof proxy table). Validate against Stuart's NatHERS runs or
+   AS/NZS 4859.1 simulation, and publish a sensitivity analysis over the
+   plausible parameter ranges (all constants live in `config/settings.py`).
+2. **Validate the HSV classifier with the Gemini experiment.** Run
+   `tools.run_gemini_osm_experiment` on a stratified sample (150–300 buildings
+   per suburb) and report agreement rates. This turns a "heuristic classifier"
+   weakness into a measured, citable accuracy figure.
+3. **True suburb boundaries.** Replace rectangular bboxes with ABS SA2
+   polygons, add an `inside_suburb` flag, report canonical in-boundary totals,
+   and draw the boundary on annotations.
+4. **Wire measured DSM pitch into the pipeline** (or explicitly de-scope it).
+   Today `stage1_{suburb}_with_pitch.parquet` is orphaned. Either make Stage 2
+   prefer it when present, or document assumed pitch as final. Note: pitch
+   only changes roof-area/costing outputs, not energy.
 
 ### Medium Priority
 
-- Replace assumed pitch with measured DSM pitch for final suburbs.
-- Validate absorptance lookup against local building stock data.
-- Add true suburb polygon boundaries (ABS SA2).
-- Expand to 3+ suburbs for comparison.
-- Improve and validate roof material classification.
-- Add output summaries by suburb and roof class.
-- Add tests around boundary filtering, unit conversions, and irradiance matching.
+5. Expand to 3+ suburbs and use `tools.compare_suburbs` for the report's
+   cross-suburb comparison.
+6. Connect real annual GHI from BARRA2 when NCI access (project ob53) lands;
+   until then NASA POWER remains the source.
+7. Validate the absorptance lookup against local building stock data.
+8. Replace the metal-roof-as-older-stock R_roof proxy with construction-era
+   data (ABS/VicMap) if obtainable.
+9. Add tests around boundary filtering, unit conversions, and irradiance
+   matching.
+10. Move remaining in-module constants (`ABSORPTANCE_BY_COLOUR` /
+    `ABSORPTANCE_BY_MATERIAL` in `cool_roof_calculator.py`, assumed-pitch
+    table in `stage1_segmentation/pipeline.py`) into `config/settings.py` so
+    sensitivity sweeps cover them.
 
 ## Data Sources
 
@@ -567,6 +647,7 @@ Raising Rooves Model/
       nasa_power/
       footprints/
     output/
+    samples/            # tracked fixture for the no-key quickstart
   research/
     findings/
   shared/
@@ -579,6 +660,7 @@ Raising Rooves Model/
     run_stage1.py
     building_footprint_segmenter.py
     roof_classifier.py
+    gemini_osm_experiment.py   # opt-in HSV-validation experiment
     stage1_visualiser.py
     tile_downloader.py
     dsm_processor.py
@@ -588,7 +670,6 @@ Raising Rooves Model/
     run_stage2.py
     barra_client.py
     cool_roof_calculator.py
-    era5_fallback.py
     irradiance_loader.py
     irradiance_processor.py
     nasa_power_client.py
@@ -600,7 +681,9 @@ Raising Rooves Model/
   tools/
     analyse_coordinate.py
     build_footprint_index.py
+    compare_suburbs.py
     extract_pitch.py
+    run_gemini_osm_experiment.py
     visualise_results.py
     ticket_manager.py
     triage_agent.py
@@ -608,7 +691,9 @@ Raising Rooves Model/
   tests/
   AGENTS.md
   CLAUDE.md
+  CONTRIBUTING.md
   README.md
+  pyproject.toml
   requirements.txt
 ```
 
