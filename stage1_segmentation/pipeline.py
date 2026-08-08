@@ -19,7 +19,9 @@ from typing import Optional
 import pandas as pd
 from tqdm import tqdm
 
-from config.settings import DEFAULT_TILE_SIZE, DEFAULT_ZOOM, OUTPUT_DIR, TILES_DIR
+from config.settings import (
+    DEFAULT_TILE_SIZE, DEFAULT_ZOOM, FLAT_PITCH_THRESHOLD_DEG, OUTPUT_DIR, TILES_DIR,
+)
 from config.suburbs import get_suburb
 from shared.file_io import ensure_dir, save_parquet
 from shared.geo_utils import compute_tile_grid, latlon_to_tile, tile_centre_latlon
@@ -63,8 +65,7 @@ def _tile_extended_bbox(
     if not tiles:
         return suburb_bbox
 
-    from stage1_segmentation.stage1_visualiser import _tile_centre_latlon
-    centres = [_tile_centre_latlon(x, y, zoom) for x, y in tiles]
+    centres = [tile_centre_latlon(x, y, zoom) for x, y in tiles]
     lats = [c[0] for c in centres]
     lons = [c[1] for c in centres]
     centre_lat = sum(lats) / len(lats)
@@ -131,9 +132,8 @@ def _classify_buildings_from_tiles(
         centroid_lon = sum(lons) / len(lons)
 
         # Find tile containing this building's centroid
-        from shared.geo_utils import latlon_to_tile, tile_centre_latlon as _tcl
         tx, ty = latlon_to_tile(centroid_lat, centroid_lon, zoom)
-        tile_lat, tile_lon = _tcl(tx, ty, zoom)
+        tile_lat, tile_lon = tile_centre_latlon(tx, ty, zoom)
 
         # Load tile image (cached)
         if (tx, ty) not in tile_cache:
@@ -270,9 +270,6 @@ def _assumed_pitch_deg(
     return _TYPICAL
 
 
-_FLAT_PITCH_THRESHOLD = 5.0  # degrees — below this a roof is classified flat
-
-
 def _orientation_from_polygon(polygon_latlon: list[list[float]]) -> Optional[float]:
     """
     Compute orientation as the bearing of the normal to the longest footprint wall.
@@ -330,7 +327,7 @@ def _building_to_row(
     centroid_lon = sum(lons) / len(lons) if lons else 0.0
 
     pitch_deg = _assumed_pitch_deg(building.building_type, building.roof_shape, building.levels)
-    is_flat = pitch_deg < _FLAT_PITCH_THRESHOLD
+    is_flat = pitch_deg < FLAT_PITCH_THRESHOLD_DEG
 
     # Actual roof surface area accounts for pitch — for flat roofs it equals footprint area.
     if pitch_deg > 0.5:

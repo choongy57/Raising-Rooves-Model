@@ -17,7 +17,7 @@ import xarray as xr
 from stage2_irradiance.barra_client import (
     _build_barra2_catalog_url,
     _build_barra2_url,
-    test_barra2_connection as check_barra2_connection,
+    check_barra2_connection,
 )
 from stage2_irradiance.irradiance_processor import compute_annual_ghi_from_hourly
 from stage2_irradiance.temperature_processor import compute_cooling_degree_hours
@@ -235,7 +235,7 @@ class TestComputeCoolingDegreeHours:
         assert result == pytest.approx(4380.0, abs=1.0)
 
 
-# ── test_barra2_connection ────────────────────────────────────────────────────
+# ── check_barra2_connection ────────────────────────────────────────────────────
 
 class TestBarra2Connection:
 

@@ -5,7 +5,7 @@ Accesses the Bureau of Meteorology's BARRA2 reanalysis dataset via
 OPeNDAP on the NCI THREDDS server. BARRA2 provides:
   - ~11 km spatial resolution (AUS-11 BARRA-R2 grid)
   - Hourly temporal resolution
-  - Variables: solar irradiance (rsds), temperature (tas), precipitation, etc.
+  - Variables: solar irradiance (rsds), temperature (tas)
 
 Data is cached locally as NetCDF files to avoid repeated downloads.
 
@@ -26,6 +26,39 @@ URL structure (verified against NCI THREDDS catalog 2026-04-30):
     (av_swsfcdown, temp_scrn).
   - Each file covers one calendar month. Use 'latest' as the version token
     to resolve the most recent data release without knowing the exact date tag.
+
+── BARRA2 Ingestion Checklist ────────────────────────────────────────────────
+When NCI project ob53 access lands, here is exactly what to do:
+
+1. Flip the master switch in config/settings.py:
+       BARRA2_ENABLED = True
+
+2. Verify connectivity (no NCI auth needed for this check):
+       python -c "from stage2_irradiance.barra_client import check_barra2_connection; print(check_barra2_connection())"
+
+3. Run a single-suburb smoke test:
+       python -m stage2_irradiance.run_stage2 --suburb Carlton --debug
+
+   This calls fetch_all_climate_data() → fetch_barra_data() for both
+   solar_irradiance (rsds) and temperature_2m (tas), one year at a time,
+   12 months per year.  Each month is a separate OPeNDAP request.
+   Cached under data/raw/barra/{solar_irradiance,temperature_2m}/.
+
+4. The Stage 2 pipeline then:
+   a. Computes monthly irradiance stats via compute_irradiance_stats()
+   b. Computes annual GHI from hourly rsds via compute_annual_ghi_from_hourly()
+      (mean W/m² × 8760 / 1000 = kWh/m²/yr — the more accurate hourly path)
+   c. Returns the hourly-derived GHI alongside the climate DataFrame so
+      run_stage2() can use it directly (the GHI discard bug is fixed)
+   d. Saves climate summary to stage2_{suburb}_climate.parquet
+   e. Uses the hourly-derived annual GHI scalar as the irradiance source
+      for per-building cool-roof calculations
+
+5. To add more climate variables (e.g. longwave radiation rlds, precipitation pr):
+   a. Add entries to BARRA2_VARIABLES in config/settings.py
+   b. Add the key to the list in fetch_all_climate_data()
+   c. Add a processing function (or use the existing ones in
+      irradiance_processor.py / temperature_processor.py)
 """
 
 import urllib.error
@@ -113,7 +146,7 @@ def _build_barra2_catalog_url(variable_key: str) -> str:
     )
 
 
-def test_barra2_connection() -> bool:
+def check_barra2_connection() -> bool:
     """
     Check whether the NCI THREDDS server is reachable.
 

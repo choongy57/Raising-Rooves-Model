@@ -142,7 +142,7 @@ Steps:
 1. Register at https://my.nci.org.au/mancini/signup
 2. Ask supervisor Stuart for the NCI project code
 3. Join the project in the NCI self-service portal
-4. Test connection: `python -c "from stage2_irradiance.barra_client import test_barra2_connection; print(test_barra2_connection())"`
+4. Test connection: `python -c "from stage2_irradiance.barra_client import check_barra2_connection; print(check_barra2_connection())"`
 
 Data is then accessed via OPeNDAP — no bulk download required.
 See RR-008 in the project ticket sheet.

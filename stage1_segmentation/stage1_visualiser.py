@@ -12,6 +12,7 @@ import cv2
 import numpy as np
 
 from config.settings import DEFAULT_TILE_SIZE, DEFAULT_ZOOM, OUTPUT_DIR, TILES_DIR
+from shared.geo_utils import tile_centre_latlon
 from shared.logging_config import setup_logging
 from stage1_segmentation.building_footprint_segmenter import BuildingFootprint
 
@@ -63,13 +64,6 @@ def _latlon_to_canvas_px(
 # ── Tile loading & stitching ──────────────────────────────────────────────────
 
 
-def _tile_centre_latlon(x: int, y: int, zoom: int) -> tuple[float, float]:
-    """Return the lat/lon centre of a web-mercator tile."""
-    n = 2 ** zoom
-    lon = (x + 0.5) / n * 360.0 - 180.0
-    lat_rad = math.atan(math.sinh(math.pi * (1.0 - 2.0 * (y + 0.5) / n)))
-    return math.degrees(lat_rad), lon
-
 
 def _stitch_tiles(suburb_key: str, zoom: int) -> tuple[np.ndarray | None, float, float, int, int]:
     """
@@ -102,7 +96,7 @@ def _stitch_tiles(suburb_key: str, zoom: int) -> tuple[np.ndarray | None, float,
         return None, 0.0, 0.0, 0, 0
 
     # Canvas centre = mean of all tile centres in lat/lon
-    centres = [_tile_centre_latlon(x, y, zoom) for x, y, _ in tiles]
+    centres = [tile_centre_latlon(x, y, zoom) for x, y, _ in tiles]
     centre_lat = sum(c[0] for c in centres) / len(centres)
     centre_lon = sum(c[1] for c in centres) / len(centres)
 

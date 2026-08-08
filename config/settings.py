@@ -65,35 +65,21 @@ BARRA2_DOMAIN = "AUS-11"
 
 # Folder/filename identifiers on THREDDS (CORDEX/CF variable names).
 # The NetCDF variable name *inside* each file may differ — see comments below.
+#
+# Currently used by the pipeline: solar_irradiance (rsds) and temperature_2m (tas).
+# To add more variables when BARRA2 is enabled, add entries here and wire them
+# into fetch_all_climate_data() in barra_client.py.
 BARRA2_VARIABLES = {
     # rsds = surface downwelling shortwave radiation flux (W/m²).
     # NetCDF variable name inside the file: rsds.
-    # Replaces the old 'av_swsfcdown' which is a UM internal name not used on THREDDS.
     "solar_irradiance": "rsds",
-    # rlds = surface downwelling longwave radiation flux (W/m²).
-    "longwave_radiation": "rlds",
     # tas = near-surface (2 m) air temperature (K).
-    # Replaces old 'temp_scrn' — same quantity, CORDEX name.
     "temperature_2m": "tas",
-    # pr = precipitation flux (kg/m²/s).
-    "precipitation": "pr",
 }
 
 # ── Melbourne Defaults ───────────────────────────────────────────────────────
 
 MELBOURNE_BBOX = (-38.1, 144.5, -37.5, 145.5)  # south, west, north, east
-
-# ── Roof Material Priors (CSR VIC data) ──────────────────────────────────────
-# Retained for future use: these priors are not yet wired into the HSV roof
-# classifier. Kept as the reference VIC material distribution for when material
-# prior weighting is added.
-
-ROOF_MATERIAL_PRIORS = {
-    "metal": 0.475,  # ~45-50% of VIC roofs
-    "concrete_tile": 0.175,  # ~15-20%
-    "terracotta_tile": 0.15,  # ~15%
-    "other": 0.20,
-}
 
 # ── Cooling/Heating Degree Day Base Temperatures ─────────────────────────────
 
@@ -109,6 +95,12 @@ FOOTPRINT_SUPPLEMENT_GPKG = RAW_DIR / "footprints" / "buildings_index.gpkg"
 
 # Fallback: raw GeoJSONL (slower — full linear scan ~23 s per suburb).
 FOOTPRINT_SUPPLEMENT_GEOJSONL = RAW_DIR / "footprints" / "melbourne_overture.geojsonl"
+
+# ── Roof Pitch ────────────────────────────────────────────────────────────────
+
+# Pitch angle (degrees) below which a roof is classified as flat.
+# Used by Stage 1 pipeline (_assumed_pitch_deg / _building_to_row) and pitch extractor.
+FLAT_PITCH_THRESHOLD_DEG = 5.0
 
 # ── Cool Roof Physics ────────────────────────────────────────────────────────
 

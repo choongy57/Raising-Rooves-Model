@@ -55,12 +55,18 @@ def run_stage2_climate(
     suburb_name: str,
     start_year: int = 2010,
     end_year: int = 2020,
-) -> pd.DataFrame:
+) -> tuple[pd.DataFrame, float | None]:
     """
     Fetch monthly climate statistics for a suburb from BARRA2.
 
-    Returns a DataFrame with monthly irradiance and temperature stats.
-    Saved to stage2_{suburb}_climate.parquet. Returns an empty DataFrame
+    Returns (climate_df, hourly_annual_ghi_kwh_m2) where *climate_df* has
+    monthly irradiance and temperature stats and *hourly_annual_ghi_kwh_m2*
+    is the preferred annual GHI from hourly flux integration (mean W/m² ×
+    8760 / 1000), or None when BARRA2 is unreachable.  The hourly value is
+    more accurate than the monthly approximation because it doesn't assume
+    constant flux across each day.
+
+    Saved to stage2_{suburb}_climate.parquet. Returns (empty DataFrame, None)
     when BARRA2 is unreachable (no NCI access).
     """
     suburb = get_suburb(suburb_name)
@@ -96,6 +102,7 @@ def run_stage2_climate(
     # hourly flux values (mean W/m² x 8760 / 1000) rather than the monthly
     # summary approximation (mean_W x 24 / 1000 per month).  The hourly path
     # is more accurate because it doesn't assume constant flux across the day.
+    hourly_annual_ghi: float | None = None
     if irradiance_ds is not None and irradiance_var in irradiance_ds:
         try:
             hourly_annual_ghi = compute_annual_ghi_from_hourly(irradiance_ds, irradiance_var)
@@ -119,7 +126,7 @@ def run_stage2_climate(
 
     if irradiance_stats.empty and temperature_stats.empty:
         logger.warning("No climate data retrieved for %s.", suburb.name)
-        return pd.DataFrame()
+        return pd.DataFrame(), None
 
     if not irradiance_stats.empty and not temperature_stats.empty:
         combined = pd.merge(
@@ -138,7 +145,7 @@ def run_stage2_climate(
     out_path = ensure_dir(OUTPUT_DIR) / f"stage2_{suburb_key}_climate.parquet"
     save_parquet(combined, out_path)
     logger.info("Climate data saved to: %s", out_path)
-    return combined
+    return combined, hourly_annual_ghi
 
 
 def run_stage2(
@@ -195,13 +202,23 @@ def run_stage2(
     annual_ghi_scalar: float | None = None
     if BARRA2_ENABLED:
         try:
-            climate_df = run_stage2_climate(suburb_name, start_year, end_year)
-            if not climate_df.empty and "mean_ghi_kwh_m2_day" in climate_df.columns:
+            climate_df, hourly_ghi = run_stage2_climate(suburb_name, start_year, end_year)
+            # Prefer the hourly-derived GHI (mean W/m² × 8760 / 1000) over the
+            # monthly approximation (daily_mean_kWh × 365) — the hourly path is
+            # more accurate because it doesn't assume constant flux across each day.
+            if hourly_ghi is not None:
+                annual_ghi_scalar = hourly_ghi
+                irradiance_source = "barra2"
+                logger.info(
+                    "Irradiance source: BARRA2 (hourly) — annual GHI %.0f kWh/m²/yr",
+                    annual_ghi_scalar,
+                )
+            elif not climate_df.empty and "mean_ghi_kwh_m2_day" in climate_df.columns:
                 daily_mean = climate_df["mean_ghi_kwh_m2_day"].mean()
                 annual_ghi_scalar = round(daily_mean * 365, 1)
                 irradiance_source = "barra2"
                 logger.info(
-                    "Irradiance source: BARRA2 — annual GHI %.0f kWh/m²/yr",
+                    "Irradiance source: BARRA2 (monthly approx) — annual GHI %.0f kWh/m²/yr",
                     annual_ghi_scalar,
                 )
         except Exception as e:

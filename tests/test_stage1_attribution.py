@@ -7,11 +7,11 @@ import math
 
 import pytest
 
+from config.settings import FLAT_PITCH_THRESHOLD_DEG
 from stage1_segmentation.pipeline import (
     _orientation_from_polygon,
     _assumed_pitch_deg,
     _building_to_row,
-    _FLAT_PITCH_THRESHOLD,
 )
 from stage1_segmentation.building_footprint_segmenter import BuildingFootprint
 
@@ -100,7 +100,7 @@ def test_is_flat_true_for_flat_roof():
 def test_is_flat_false_for_typical_pitch():
     row = _building_to_row(_make_building(roof_shape="gabled"), "Carlton", 0)
     assert row["is_flat"] is False
-    assert row["pitch_deg"] >= _FLAT_PITCH_THRESHOLD
+    assert row["pitch_deg"] >= FLAT_PITCH_THRESHOLD_DEG
 
 
 def test_roof_surface_area_larger_than_footprint_for_pitched_roof():

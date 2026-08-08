@@ -68,7 +68,7 @@ from shared.geo_utils import latlon_to_tile, tile_centre_latlon
 from shared.logging_config import setup_logging
 from shared.validation import validate_env_vars
 from stage1_segmentation.building_footprint_segmenter import (
-    FootprintQueryResult,
+    BuildingFootprint,
     query_buildings_in_bbox,
 )
 
@@ -257,7 +257,7 @@ def _latlon_to_grid_pixel(
 
 def annotate_image(
     img: np.ndarray,
-    result: FootprintQueryResult,
+    buildings: list[BuildingFootprint],
     grid_centre_lat: float,
     grid_centre_lon: float,
     zoom: int,
@@ -270,7 +270,7 @@ def annotate_image(
     canvas_size = grid * _GRID_TILE_SIZE
     overlay = img.copy()
 
-    for i, bldg in enumerate(result.buildings):
+    for i, bldg in enumerate(buildings):
         if not bldg.polygon_latlon or len(bldg.polygon_latlon) < 3:
             continue
 
@@ -308,22 +308,28 @@ def annotate_image(
 # ── Summary ───────────────────────────────────────────────────────────────────
 
 
-def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
+def print_summary(
+    buildings: list[BuildingFootprint],
+    query_lat: float,
+    tag: str,
+    grid: int,
+) -> str:
     """Format and print a summary table. Returns the text."""
-    mpp = _metres_per_canvas_px(result.query_lat, DEFAULT_ZOOM)
+    mpp = _metres_per_canvas_px(query_lat, DEFAULT_ZOOM)
     px_per_side = _GRID_TILE_SIZE * grid
     tile_area = (px_per_side * mpp) ** 2
-    coverage_pct = (result.total_area_m2 / tile_area * 100) if tile_area > 0 else 0
+    total_area = sum(b.area_m2 for b in buildings)
+    n = len(buildings)
+    coverage_pct = (total_area / tile_area * 100) if tile_area > 0 else 0
 
     area_label = f"{grid}x{grid} tile grid" if grid > 1 else "single tile"
     side_m = int(px_per_side * mpp)
 
     # Tag coverage stats
-    n = result.count
     def _pct(field: str) -> str:
         if n == 0:
             return "n/a"
-        count = sum(1 for b in result.buildings if getattr(b, field) is not None)
+        count = sum(1 for b in buildings if getattr(b, field) is not None)
         return f"{count}/{n} ({100*count//n}%)"
 
     lines = [
@@ -333,8 +339,8 @@ def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
         "=" * 60,
         f"  Source           : OSM Overpass API (OpenStreetMap)",
         f"  Area queried     : {area_label} (~{side_m}x{side_m} m)",
-        f"  Buildings found  : {result.count}",
-        f"  Total roof area  : {result.total_area_m2:,.0f} m²",
+        f"  Buildings found  : {n}",
+        f"  Total roof area  : {total_area:,.0f} m²",
         f"  Approx area      : {tile_area:,.0f} m²",
         f"  Roof coverage    : {coverage_pct:.1f} %",
         "-" * 60,
@@ -347,10 +353,10 @@ def print_summary(result: FootprintQueryResult, tag: str, grid: int) -> str:
         "-" * 60,
     ]
 
-    if result.buildings:
+    if buildings:
         lines.append(f"  {'#':<5} {'Building ID':<15} {'Area (m²)':>10}  {'Type':<15} {'Material'}")
         lines.append(f"  {'-'*5} {'-'*15} {'-'*10}  {'-'*15} {'-'*8}")
-        for i, bldg in enumerate(sorted(result.buildings, key=lambda b: -b.area_m2)):
+        for i, bldg in enumerate(sorted(buildings, key=lambda b: -b.area_m2)):
             lines.append(
                 f"  {i+1:<5} {bldg.building_id:<15} {bldg.area_m2:>10,.1f}"
                 f"  {(bldg.building_type or '-'):<15} {bldg.roof_material or '-'}"
@@ -489,20 +495,13 @@ def main() -> None:
         logger.error("%s", exc)
         sys.exit(1)
 
-    footprint_result = FootprintQueryResult(
-        query_lat=lat,
-        query_lon=lon,
-        tile_bbox=(south, west, north, east),
-        buildings=buildings,
-    )
-
     # Step 3: Print summary
-    summary_text = print_summary(footprint_result, tag, grid)
+    summary_text = print_summary(buildings, lat, tag, grid)
 
     # Step 4: Stitch tiles and annotate
     stitched = stitch_tiles(tile_results, grid)
     annotated = annotate_image(
-        stitched, footprint_result,
+        stitched, buildings,
         grid_centre_lat, grid_centre_lon,
         args.zoom, grid,
     )
@@ -513,7 +512,7 @@ def main() -> None:
 
     # Step 5: Save CSV
     csv_path = out_dir / f"{tag}_buildings.csv"
-    if footprint_result.buildings:
+    if buildings:
         with open(csv_path, "w", newline="") as f:
             fieldnames = [
                 "building_id", "area_m2", "source",
@@ -523,7 +522,7 @@ def main() -> None:
             ]
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            for bldg in footprint_result.buildings:
+            for bldg in buildings:
                 lons = [c[0] for c in bldg.polygon_latlon]
                 lats = [c[1] for c in bldg.polygon_latlon]
                 writer.writerow({
@@ -546,7 +545,7 @@ def main() -> None:
 
     print(f"\nOutputs saved to: {out_dir}")
     print(f"  Annotated image : {img_path.name}")
-    if footprint_result.buildings:
+    if buildings:
         print(f"  Buildings CSV   : {csv_path.name}")
     print(f"  Summary text    : {summary_path.name}")
 

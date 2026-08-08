@@ -77,24 +77,6 @@ class BuildingFootprint:
     absorptance_uncertainty: Optional[float] = None
 
 
-@dataclass
-class FootprintQueryResult:
-    """All building footprints found in the query area."""
-
-    query_lat: float
-    query_lon: float
-    tile_bbox: tuple[float, float, float, float]  # (south, west, north, east)
-    buildings: list[BuildingFootprint] = field(default_factory=list)
-
-    @property
-    def total_area_m2(self) -> float:
-        return sum(b.area_m2 for b in self.buildings)
-
-    @property
-    def count(self) -> int:
-        return len(self.buildings)
-
-
 # ── Coordinate helpers ────────────────────────────────────────────────────────
 
 
