@@ -55,7 +55,7 @@ DEFAULT_MAP_TYPE = "satellite"
 # every fetch fails (2 variables x years x 12 months of doomed, un-timeboxed
 # network calls), so the path stays off until access lands. Flip to True once
 # an NCI account with ob53 is available.
-BARRA2_ENABLED = False
+BARRA2_ENABLED = True
 
 BARRA2_THREDDS_BASE = "https://thredds.nci.org.au/thredds/dodsC/ob53"
 BARRA2_CATALOG_BASE = "https://thredds.nci.org.au/thredds/catalog/ob53"
@@ -154,6 +154,12 @@ MULTISTOREY_ATTENUATION = 0.5
 # The remainder is offset by natural ventilation, thermal mass buffering, or night
 # purging. Based on NatHERS 6-star house modelling for Melbourne climate.
 COOLING_FRACTION = 0.70
+
+# Fraction of interior heat LOSS through the roof (in winter) that drives active
+# heating demand.  Same NatHERS basis as COOLING_FRACTION — the other 30 % is
+# assumed offset by thermal mass, internal gains, and solar gain through windows.
+# TODO: validate against Stuart's NatHERS runs for heating season.
+HEATING_FRACTION = 0.70
 
 # COP for typical residential split-system AC at Melbourne summer conditions.
 # GEMS Determination 2019 minimum for a 3.5 kW unit.

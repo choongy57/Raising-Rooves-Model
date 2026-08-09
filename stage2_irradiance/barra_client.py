@@ -270,7 +270,7 @@ def fetch_barra_data(
         ds_year = xr.concat(monthly_slices, dim="time")
         try:
             ds_year.to_netcdf(cache_path)
-            logger.info("Cached BARRA2 %s %d → %s", variable_key, year, cache_path)
+            logger.info("Cached BARRA2 %s %d -> %s", variable_key, year, cache_path)
         except Exception as e:
             logger.warning("Could not cache BARRA2 %s %d: %s", variable_key, year, e)
 

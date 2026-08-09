@@ -27,9 +27,6 @@ pyarrow>=14.0
 python-dotenv>=1.0
 tqdm>=4.66
 
-# Google Sheets ticket tracker
-gspread>=6.0
-google-auth>=2.0
 
 # Visualisation
 folium>=0.15

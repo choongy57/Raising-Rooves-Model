@@ -140,7 +140,7 @@ def compute_annual_ghi_from_hourly(
     annual_kwh = mean_w_m2 * 8760 / 1000
 
     logger.info(
-        "compute_annual_ghi_from_hourly: mean %.2f W/m² over %d year(s) → %.1f kWh/m²/yr",
+        "compute_annual_ghi_from_hourly: mean %.2f W/m2 over %d year(s) -> %.1f kWh/m2/yr",
         mean_w_m2,
         len(yearly_means),
         annual_kwh,

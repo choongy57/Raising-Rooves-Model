@@ -61,12 +61,7 @@ specific stage you're working on (see the table below).
 | `GOOGLE_MAPS_API_KEY` | Satellite tile download (Stage 1) | Stage 1 |
 | `GEMINI_API_KEY` | Gemini roof-assessment experiment (HSV validation) | Experiment only; free tier at https://aistudio.google.com/app/apikey |
 | `OPENTOPO_API_KEY` | COP30 DSM fallback for pitch extraction | Pitch tool |
-| `GOOGLE_SHEET_ID` | QA ticket tracker | QA / test monitor |
-| `GWS_CREDS_FILE` | Google Sheets OAuth credential path (Windows: use a full path, `~` is not expanded) | QA / test monitor |
-
-Stage 2 needs no key at all — irradiance comes from NASA POWER automatically.
-
-NCI THREDDS access for BARRA2 does not use a key — register at https://my.nci.org.au and request project `ob53` access.
+Stage 2 needs no key at all — BARRA2 irradiance comes from NCI THREDDS OPeNDAP (public, no auth needed), with NASA POWER as fallback.
 
 ---
 
@@ -130,10 +125,10 @@ Add `--debug` to any command for verbose logging.
 python -m pytest tests/
 ```
 
-Before committing any physics or data-join changes, also run:
+Before committing any physics or data-join changes, also run the full test suite:
 
 ```bash
-python -m tools.test_monitor --dry-run
+python -m pytest tests/ -x
 ```
 
 ---

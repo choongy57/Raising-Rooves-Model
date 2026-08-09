@@ -503,19 +503,11 @@ co2_saved            = energy_saved * 0.79 kg/kWh
 horizontal irradiance. Roof surface area is still useful for material quantity
 and cost estimates.
 
-## QA Ticket System
-
-Test failures are automatically triaged and written to a Google Sheet as
-structured tickets.
+## QA
 
 ```bash
-python -m tools.test_monitor              # run tests, auto-create tickets for failures
-python -m tools.test_monitor --dry-run    # parse without writing to sheet
-python -m tools.test_monitor --list       # print open tickets
-python -m tools.test_monitor --triage-only
+python -m pytest tests/ -x
 ```
-
-Requires `GOOGLE_SHEET_ID` and `GWS_CREDS_FILE` in `.env`.
 
 ## Latest Clayton Validation Snapshot
 
@@ -685,9 +677,6 @@ Raising Rooves Model/
     extract_pitch.py
     run_gemini_osm_experiment.py
     visualise_results.py
-    ticket_manager.py
-    triage_agent.py
-    test_monitor.py
   tests/
   AGENTS.md
   CLAUDE.md

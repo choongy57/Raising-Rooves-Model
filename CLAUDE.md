@@ -155,19 +155,18 @@ Use this as the quick checklist when Ryan asks "what APIs/data do we use?"
 | Satellite imagery | Google Maps Static API | `GOOGLE_MAPS_API_KEY` in `.env` | Active tile download |
 | Building footprints | OpenStreetMap Overpass API | No key | Active Stage 1 footprint source |
 | Building footprints supplement | VicMap BUILDING_POLYGON | Manual SHP download from DataShare | Optional merge |
-| Irradiance (active) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | De-facto Stage 2 source |
-| Irradiance (future) | BARRA2 via NCI THREDDS/OPeNDAP | NCI project ob53 access required | Dormant until access lands |
+| Irradiance (active) | BARRA2 via NCI THREDDS/OPeNDAP | No key needed (public OPeNDAP) | Active Stage 2 source |
+| Irradiance (fallback) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | Fallback Stage 2 source |
 | DSM pitch data | ELVIS 1 m LiDAR | Manual download, free registration | Recommended pitch source |
 | DSM inner-city fallback | City of Melbourne Open Data DSM | Manual download | Useful for inner suburbs |
 | DSM coarse fallback | OpenTopography COP30 | `OPENTOPO_API_KEY` in `.env` | Programmatic fallback |
 | Suburb boundaries | ABS SA2 shapefiles / manual bbox | Manual data prep | Needed for robust coverage |
-| QA ticket tracker | Google Sheets | `GOOGLE_SHEET_ID` + `GWS_CREDS_FILE` in `.env` | Active — `tools/test_monitor.py` |
 
 Never paste API keys into notes, commits, chat, or screenshots.
 
-## Stage Notes & QA
+## Stage Notes
 
-Per-stage detail (output columns, physics limitations, QA ticket workflow) is in
+Per-stage detail (output columns, physics limitations) is in
 the lazy-loaded `stage-notes` skill — invoke it when working on a pipeline stage.
 Quick reference:
 
@@ -175,8 +174,6 @@ Quick reference:
   is absorbed solar reduction — NOT electricity savings. Stage 3 handles that.
 - **Stage 3:** R_roof inferred per building. Constants in `config/settings.py`
   are unvalidated Melbourne defaults — the #1 roadmap item.
-- **QA:** `python -m tools.test_monitor` before physics/data-join changes. Tickets
-  in Google Sheets, priority: P1=physics bugs, P2=test failures.
 
 ## README Update Rules
 
