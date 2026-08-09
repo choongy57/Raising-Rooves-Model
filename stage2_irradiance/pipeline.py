@@ -10,10 +10,12 @@ Two responsibilities:
 
 Irradiance source priority:
   a. BARRA2 via OPeNDAP — gated behind BARRA2_ENABLED (False until NCI
-     project ob53 access lands); NASA POWER is the de-facto source today.
-  b. CSV file provided via --irradiance-file (lat, lon, annual_ghi_kwh_m2)
-  c. NASA POWER REST API (free, no key — ~50 km resolution, cached per suburb)
-  d. Melbourne default GHI constant (~1850 kWh/m²/yr) — last-resort placeholder
+     project ob53 access lands).
+  b. BARRA2 via hourly CSV (--barra-csv) — pre-extracted hourly data,
+     no NCI auth needed; also produces monthly temperature stats for Stage 3.
+  c. CSV file provided via --irradiance-file (lat, lon, annual_ghi_kwh_m2)
+  d. NASA POWER REST API (free, no key — ~50 km resolution, cached per suburb)
+  e. Melbourne default GHI constant (~1850 kWh/m²/yr) — last-resort placeholder
 """
 
 from pathlib import Path
@@ -30,7 +32,7 @@ from config.settings import (
 from config.suburbs import get_suburb
 from shared.file_io import ensure_dir, load_stage_input, save_parquet, save_stage_outputs
 from shared.logging_config import setup_logging
-from stage2_irradiance.barra_client import fetch_all_climate_data
+from stage2_irradiance.barra_client import fetch_all_climate_data, ingest_barra2_csv
 from stage2_irradiance.cool_roof_calculator import calculate_building_benefit
 from stage2_irradiance.irradiance_loader import (
     load_irradiance_csv,
@@ -151,6 +153,7 @@ def run_stage2_climate(
 def run_stage2(
     suburb_name: str,
     irradiance_file: Path | None = None,
+    barra_csv: Path | None = None,
     start_year: int = 2010,
     end_year: int = 2020,
 ) -> pd.DataFrame:
@@ -160,15 +163,17 @@ def run_stage2(
 
     Irradiance source priority:
       1. BARRA2 via OPeNDAP (only when BARRA2_ENABLED — run_stage2_climate)
-      2. CSV file at irradiance_file (lat, lon, annual_ghi_kwh_m2)
-      3. NASA POWER REST API (free, no key — cached to data/raw/nasa_power/)
-      4. Melbourne default GHI constant (~1850 kWh/m²/yr)
+      2. BARRA2 via hourly CSV (barra_csv — pre-extracted, no NCI auth needed)
+      3. CSV file at irradiance_file (lat, lon, annual_ghi_kwh_m2)
+      4. NASA POWER REST API (free, no key — cached to data/raw/nasa_power/)
+      5. Melbourne default GHI constant (~1850 kWh/m²/yr)
 
     Args:
         suburb_name: Suburb to process (must have a Stage 1 output).
         irradiance_file: Path to irradiance CSV, or None.
-        start_year: First year for BARRA2 query (used only if BARRA2 accessible).
-        end_year: Last year for BARRA2 query.
+        barra_csv: Path to pre-extracted hourly BARRA2 CSV, or None.
+        start_year: First year for BARRA2 OPeNDAP query.
+        end_year: Last year for BARRA2 OPeNDAP query.
 
     Returns:
         DataFrame with all Stage 1 columns plus:
@@ -226,14 +231,43 @@ def run_stage2(
     else:
         logger.debug("BARRA2 disabled (BARRA2_ENABLED=False) — skipping to CSV/NASA POWER.")
 
+    # Priority 2: BARRA2 via pre-extracted hourly CSV.  This path mirrors
+    # run_stage2_climate but reads from a local CSV instead of OPeNDAP, so it
+    # works without NCI access.  When the CSV is valid we get both the annual
+    # GHI scalar AND a climate DataFrame; when it fails we fall through.
+    if annual_ghi_scalar is None and barra_csv is not None:
+        logger.info("Irradiance source: BARRA2 hourly CSV — %s", barra_csv)
+        try:
+            climate_df, hourly_ghi = ingest_barra2_csv(barra_csv, suburb.name)
+            if hourly_ghi is not None:
+                annual_ghi_scalar = hourly_ghi
+                irradiance_source = "barra2_csv"
+                logger.info(
+                    "BARRA2 CSV annual GHI: %.0f kWh/m²/yr.", annual_ghi_scalar,
+                )
+                # Save climate stats alongside the stage2 output for Stage 3.
+                if not climate_df.empty:
+                    out_path = (
+                        ensure_dir(OUTPUT_DIR)
+                        / f"stage2_{suburb_key}_climate.parquet"
+                    )
+                    save_parquet(climate_df, out_path)
+                    logger.info("BARRA2 CSV climate stats saved to: %s", out_path)
+            else:
+                logger.warning(
+                    "BARRA2 CSV %s produced no annual GHI — falling through.", barra_csv
+                )
+        except Exception as e:
+            logger.warning("BARRA2 CSV ingestion failed: %s — falling through.", e)
+
     if annual_ghi_scalar is None:
-        # Priority 2: User-supplied CSV
+        # Priority 3: User-supplied CSV
         if irradiance_file:
             logger.info("Irradiance source: user CSV — %s", irradiance_file)
             irradiance_df = load_irradiance_csv(irradiance_file)
             irradiance_source = "csv_file"
         else:
-            # Priority 3: NASA POWER (free REST API, cached per suburb)
+            # Priority 4: NASA POWER (free REST API, cached per suburb)
             logger.info(
                 "Irradiance source: NASA POWER API (bbox south=%.4f west=%.4f "
                 "north=%.4f east=%.4f).",
@@ -256,7 +290,7 @@ def run_stage2(
                     len(nasa_df), mean_ghi,
                 )
             else:
-                # Priority 4: Melbourne default constant (last resort)
+                # Priority 5: Melbourne default constant (last resort)
                 logger.warning(
                     "NASA POWER returned no data — falling back to Melbourne "
                     "default GHI constant (%.0f kWh/m²/yr).",

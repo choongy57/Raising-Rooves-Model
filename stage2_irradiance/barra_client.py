@@ -66,6 +66,7 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 import xarray as xr
 
 from config.settings import (
@@ -297,6 +298,133 @@ def fetch_barra_data(
         end_year,
     )
     return combined
+
+
+def ingest_barra2_csv(
+    csv_path: Path,
+    suburb_name: str,
+) -> tuple[pd.DataFrame, float | None]:
+    """
+    Ingest a pre-extracted hourly BARRA2 CSV file and compute climate stats.
+
+    This is the CSV-based equivalent of ``fetch_all_climate_data()`` +
+    ``compute_irradiance_stats()`` + ``compute_temperature_stats()`` +
+    ``compute_annual_ghi_from_hourly()``.  It exists so the pipeline can use
+    BARRA2 data that has been pre-extracted outside the OPeNDAP path (e.g. via
+    NCI Gadi job submission or the THREDDS subsetting service).
+
+    Expected CSV columns (one row per hour)::
+
+        time_UTC, rsds_total_Wm2, temp_C
+
+    The file may also carry extra columns (rsdsdir_Wm2, rsdsdif_Wm2, temp_K,
+    rel_humidity_percent, wind_ms) — they are ignored.
+
+    Args:
+        csv_path: Path to the hourly BARRA2 CSV file.
+        suburb_name: Suburb name for labelling output rows.
+
+    Returns:
+        (climate_df, annual_ghi_kwh_m2) where *climate_df* has monthly
+        irradiance and temperature stats (same schema as the OPeNDAP path)
+        and *annual_ghi_kwh_m2* is the hourly-derived annual GHI scalar.
+        Returns (empty DataFrame, None) when the CSV is missing or unreadable.
+    """
+    if not csv_path.exists():
+        logger.warning("BARRA2 CSV not found: %s", csv_path)
+        return pd.DataFrame(), None
+
+    try:
+        df = pd.read_csv(csv_path, parse_dates=["time_UTC"])
+    except Exception as e:
+        logger.warning("Failed to read BARRA2 CSV %s: %s", csv_path, e)
+        return pd.DataFrame(), None
+
+    required = {"time_UTC", "rsds_total_Wm2", "temp_C"}
+    missing = required - set(df.columns)
+    if missing:
+        logger.warning(
+            "BARRA2 CSV %s is missing required columns: %s. Found: %s",
+            csv_path, missing, set(df.columns),
+        )
+        return pd.DataFrame(), None
+
+    logger.info(
+        "Ingesting BARRA2 hourly CSV: %s (%d rows, %d columns).",
+        csv_path.name, len(df), len(df.columns),
+    )
+
+    # ── Monthly irradiance stats ────────────────────────────────────────────
+    df["month"] = df["time_UTC"].dt.month
+
+    irradiance_records = []
+    for month, group in df.groupby("month"):
+        rsds = group["rsds_total_Wm2"]
+        mean_w_m2 = float(rsds.mean())
+        peak_w_m2 = float(rsds.max())
+        mean_kwh_m2_day = mean_w_m2 * 24 / 1000  # 24h mean flux → daily energy
+        irradiance_records.append({
+            "suburb": suburb_name,
+            "month": int(month),
+            "mean_ghi_w_m2": round(mean_w_m2, 2),
+            "mean_ghi_kwh_m2_day": round(mean_kwh_m2_day, 2),
+            "peak_ghi_w_m2": round(peak_w_m2, 2),
+        })
+
+    irradiance_stats = pd.DataFrame(irradiance_records)
+
+    # ── Monthly temperature stats ───────────────────────────────────────────
+    from config.settings import CDD_BASE_TEMP, HDD_BASE_TEMP
+
+    temperature_records = []
+    for month, group in df.groupby("month"):
+        temp = group["temp_C"]
+        mean_temp = float(temp.mean())
+        max_temp = float(temp.max())
+        min_temp = float(temp.min())
+        days_in_month = group["time_UTC"].dt.day.nunique()
+        cdd = max(0, mean_temp - CDD_BASE_TEMP) * days_in_month
+        hdd = max(0, HDD_BASE_TEMP - mean_temp) * days_in_month
+        temperature_records.append({
+            "suburb": suburb_name,
+            "month": int(month),
+            "mean_temp_c": round(mean_temp, 2),
+            "max_temp_c": round(max_temp, 2),
+            "min_temp_c": round(min_temp, 2),
+            "cdd": round(cdd, 1),
+            "hdd": round(hdd, 1),
+        })
+
+    temperature_stats = pd.DataFrame(temperature_records)
+
+    # ── Merge irradiance + temperature on month ─────────────────────────────
+    combined = pd.merge(
+        irradiance_stats,
+        temperature_stats.drop(columns=["suburb"], errors="ignore"),
+        on="month",
+        how="outer",
+    )
+    combined["suburb"] = suburb_name
+
+    # ── Annual GHI from hourly rsds ─────────────────────────────────────────
+    # mean W/m² × 8760 h/yr ÷ 1000 = kWh/m²/yr
+    valid_rsds = df["rsds_total_Wm2"].dropna()
+    if len(valid_rsds) == 0:
+        logger.warning("No valid rsds_total_Wm2 values in %s.", csv_path.name)
+        annual_ghi = None
+    else:
+        mean_w_m2 = float(valid_rsds.mean())
+        annual_ghi = round(mean_w_m2 * 8760 / 1000, 1)
+        logger.info(
+            "BARRA2 CSV annual GHI: %.1f kWh/m²/yr (mean %.2f W/m² over %d hours).",
+            annual_ghi, mean_w_m2, len(valid_rsds),
+        )
+
+    logger.info(
+        "BARRA2 CSV ingestion complete: %d monthly rows, annual GHI %s kWh/m²/yr.",
+        len(combined), f"{annual_ghi:.0f}" if annual_ghi is not None else "N/A",
+    )
+    return combined, annual_ghi
 
 
 def fetch_all_climate_data(

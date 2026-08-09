@@ -134,80 +134,16 @@ python -m pytest tests/
 
 ## Run Commands
 
-### MVP Coordinate Analysis
+All `python -m ...` entry points are documented in `README.md` — run `--help`
+on any entry point for the full flag list. The canonical invocation per stage:
 
 ```bash
-python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185
-python -m tools.analyse_coordinate --suburb Clayton
-python -m tools.analyse_coordinate --suburb Clayton --radius 500
-python -m tools.analyse_coordinate --suburb Clayton --grid 5
-python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --debug
-python -m tools.analyse_coordinate --lat -37.9261 --lon 145.1185 --footprint-file data/raw/footprints/australia.geojson
-```
-
-### Stage 1 - Roof Segmentation
-
-```bash
-python -m stage1_segmentation.run_stage1 --suburb "Richmond"
-python -m stage1_segmentation.run_stage1 --suburb "Richmond" --debug
-python -m stage1_segmentation.run_stage1 --suburb "Richmond" --max-tiles 10
-python -m stage1_segmentation.run_stage1 --list-suburbs
-```
-
-### Roof Pitch Extraction
-
-```bash
-python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif
-python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif --debug
-python -m tools.extract_pitch --suburb Clayton --download-cop30
-```
-
-### Stage 2 - Cool Roof Delta
-
-```bash
-python -m stage2_irradiance.run_stage2 --suburb "Carlton"
-python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data/raw/barra/carlton_ghi.csv
-python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data/raw/barra/carlton_ghi.csv --debug
-```
-
-### Stage 3 - Thermal Electricity Savings
-
-```bash
-python -m stage3_thermal.run_stage3 --suburb "Carlton"
-python -m stage3_thermal.run_stage3 --suburb "Carlton" --debug
-python -m stage3_thermal.run_stage3 --list-suburbs
-```
-
-### Visualise Results (single suburb)
-
-```bash
-python -m tools.visualise_results --suburb Carlton
-python -m tools.visualise_results --suburb Carlton --stage2-only
-python -m tools.visualise_results --suburb Carlton --debug
-```
-
-### Compare Suburbs (multi-suburb summary for FYP reporting)
-
-```bash
+python -m stage1_segmentation.run_stage1 --suburb "<name>"
+python -m stage2_irradiance.run_stage2 --suburb "<name>"
+python -m stage3_thermal.run_stage3 --suburb "<name>"
+python -m tools.visualise_results --suburb <name>
 python -m tools.compare_suburbs
-python -m tools.compare_suburbs --stage 2
-python -m tools.compare_suburbs --debug
-```
-
-### Tests
-
-```bash
 python -m pytest tests/
-```
-
-### QA Ticket Monitor
-
-```bash
-python -m tools.test_monitor                 # run tests, auto-create tickets
-python -m tools.test_monitor --dry-run       # parse failures only, no sheet writes
-python -m tools.test_monitor --triage-only   # re-triage all open tickets
-python -m tools.test_monitor --list          # print open tickets to console
-python -m tools.test_monitor --debug
 ```
 
 ## External APIs And Data Sources
@@ -229,116 +165,18 @@ Use this as the quick checklist when Ryan asks "what APIs/data do we use?"
 
 Never paste API keys into notes, commits, chat, or screenshots.
 
-## Stage Notes
+## Stage Notes & QA
 
-### Stage 1 - Complete
+Per-stage detail (output columns, physics limitations, QA ticket workflow) is in
+the lazy-loaded `stage-notes` skill — invoke it when working on a pipeline stage.
+Quick reference:
 
-Stage 1 uses OSM building footprints, optionally merged with VicMap building
-polygons. It classifies roof material and colour with an HSV pixel classifier
-when roof tags are missing. It writes:
-
-- `data/output/stage1_{suburb}.parquet`
-- `data/output/stage1_{suburb}.csv`
-- `data/output/stage1_{suburb}_annotated.png`
-- `data/output/stage1_{suburb}_polygons.json`
-
-Important columns include:
-
-`suburb, building_id, roof_id, area_m2, lat, lon, source, building_type,
-levels, roof_material, roof_colour, roof_shape, pitch_deg,
-classifier_confidence`
-
-### Roof Pitch Extraction - Complete Standalone Tool
-
-`tools/extract_pitch.py` adds measured pitch where a DSM GeoTIFF is available.
-
-- Algorithm: RANSAC plane fit, then SVD refit on inliers.
-- Outlier removal: MAD-based Z-spike filter.
-- Outputs: `stage1_{suburb}_with_pitch.parquet/csv` and
-  `stage1_{suburb}_pitch_map.png`.
-- Flags: `ok`, `flat`, `unrealistic`, `too_few_points`, `ransac_failed`,
-  `extraction_failed`.
-
-### Stage 2 - Working
-
-Stage 2 joins Stage 1 buildings to annual irradiance and computes per-building
-cool roof benefit.
-
-Input expectations:
-
-- Stage 1 parquet for the suburb (a tracked Carlton sample lives in
-  `data/samples/` — copy it to `data/output/` to run without Stage 1).
-- Optional irradiance CSV with `lat, lon, annual_ghi_kwh_m2`.
-
-Added output columns:
-
-`annual_ghi_kwh_m2, irradiance_source, absorptance_before,
-energy_incident_kwh_yr, energy_saved_kwh_yr, co2_saved_kg_yr,
-absorptance_confidence`
-
-Important limitation:
-
-`energy_saved_kwh_yr` means reduced absorbed solar energy, not building
-electricity savings — Stage 3 handles thermal transfer and HVAC efficiency.
-`energy_incident` deliberately uses footprint area (GHI is horizontal);
-roof surface area is only for material/costing.
-
-### Stage 3 - Working
-
-Stage 3 converts the Stage 2 absorbed-solar delta into cooling electricity
-savings via a per-building chain:
-
-`R_roof (inferred from building_type/roof_material/levels) → U/(U+h_out)
-fraction → heat to interior → cooling load (×0.70) → electricity (/COP) → CO2`
-
-Added output columns:
-
-`roof_r_value_m2k, heat_transfer_fraction, heat_to_interior_kwh_yr,
-cooling_load_reduction_kwh_yr, electricity_saved_kwh_yr,
-co2_electricity_saved_kg_yr`
-
-Important limitation:
-
-Stage 3 re-scales the Stage 2 delta by insulation-derived fractions — the
-conductive term cancels in the model, so it is not an independent physics
-engine. Constants (`H_OUTSIDE`, `COOLING_FRACTION`, COP, R_roof table) are
-unvalidated Melbourne defaults in `config/settings.py`; validating them is
-the #1 roadmap item.
-
-## QA Ticket Workflow
-
-Tickets live in the `Tickets` tab of the Google Sheet at:
-`https://docs.google.com/spreadsheets/d/1z_eGmxD2i_fewjbLDBB36IMgFKzJ3WyDaQdipnD03_8`
-
-Auth uses `GWS_CREDS_FILE` (the existing `uni-email.json` OAuth2 credential —
-same account as the GWS MCP server). No separate service account is needed.
-
-### Ticket lifecycle
-
-`open` → `triaged` → `in_progress` → `review` → `closed`
-
-Auto-triage (via `tools/triage_agent.py`) assigns:
-
-| Field | How assigned |
-| --- | --- |
-| `stage` | regex match on title/description against module names |
-| `type` | regex match for test_failure / data_quality / logic_bug / performance / config |
-| `priority` | P1 for physics/unit bugs; P2 for test failures; P3 for missing data; P4 for perf |
-
-### Priority rules (P1 = most urgent)
-
-| Priority | Trigger |
-| --- | --- |
-| P1-critical | Physics/unit code: `energy_saved`, `absorptance`, `kWh`, `W/m2`, `epsg` |
-| P2-high | Any pytest `FAILED`/`ERROR`, pipeline crash |
-| P3-medium | Missing data, fallback triggered, NaN values |
-| P4-low | Performance, config, cosmetic |
-
-### When to run the monitor
-
-- Run `python -m tools.test_monitor` before committing any physics or data-join changes.
-- Use `--dry-run` to preview without touching the sheet.
-- Duplicate detection: an identical title with status `open/triaged/in_progress` won't create a second ticket.
+- **Stage 1:** OSM + VicMap footprints, HSV pixel classifier. `energy_saved_kwh_yr`
+  is absorbed solar reduction — NOT electricity savings. Stage 3 handles that.
+- **Stage 3:** R_roof inferred per building. Constants in `config/settings.py`
+  are unvalidated Melbourne defaults — the #1 roadmap item.
+- **QA:** `python -m tools.test_monitor` before physics/data-join changes. Tickets
+  in Google Sheets, priority: P1=physics bugs, P2=test failures.
 
 ## README Update Rules
 
@@ -389,35 +227,16 @@ When asked to sync project knowledge into the vault:
    ```text
    Projects/Raising Rooves/
    ```
-4. Suggested vault notes:
-   - `Projects/Raising Rooves/Overview.md`
-   - `Projects/Raising Rooves/Current Plan.md`
-   - `Projects/Raising Rooves/API and Data Sources.md`
-   - `Projects/Raising Rooves/Decisions.md`
-   - `Projects/Raising Rooves/Research Questions.md`
-   - `Projects/Raising Rooves/Meeting Notes.md`
+4. Suggested vault notes (see step 3 for preferred directory):
+   - `Overview.md`, `Current Plan.md`, `API and Data Sources.md`
+   - `Decisions.md`, `Research Questions.md`, `Meeting Notes.md`
+   - One per pipeline stage (e.g. `Stage 1 - Roof Segmentation.md`)
 5. Add backlinks from project notes to relevant FYP or university notes if
    those notes already exist.
 6. Do not move secrets, raw datasets, huge outputs, or generated tiles into the
    vault.
 7. When a decision changes code behaviour, update both the repo docs and the
    relevant vault planning note.
-
-Suggested wiki structure:
-
-```text
-Projects/Raising Rooves/
-  Overview.md
-  Current Plan.md
-  API and Data Sources.md
-  Architecture.md
-  Decisions.md
-  Research Questions.md
-  Meeting Notes.md
-  Stage 1 - Roof Segmentation.md
-  Stage 2 - Irradiance and Cool Roof Delta.md
-  Stage 3 - Thermal Modelling.md
-```
 
 Suggested decision entry format:
 

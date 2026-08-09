@@ -2,7 +2,10 @@
 CLI entry point for Stage 2: Cool Roof Delta Calculation.
 
 Usage:
-    # With an irradiance CSV (recommended until BARRA2 is connected):
+    # With a pre-extracted hourly BARRA2 CSV (best — real reanalysis data, no NCI auth):
+    python -m stage2_irradiance.run_stage2 --suburb "Carlton" --barra-csv data/raw/barra/clayton_2007_hourly.csv
+
+    # With an irradiance CSV:
     python -m stage2_irradiance.run_stage2 --suburb "Carlton" --irradiance-file data/raw/barra/carlton_ghi.csv
 
     # Without irradiance file — fetches NASA POWER automatically (no key),
@@ -14,6 +17,11 @@ Usage:
 
     # List available suburbs:
     python -m stage2_irradiance.run_stage2 --list-suburbs
+
+BARRA2 hourly CSV format (one row per hour):
+    time_UTC,rsds_total_Wm2,temp_C
+    2007-01-01T00:00:00Z,821.13,25.18
+    ...
 
 Irradiance CSV format (lat, lon, annual_ghi_kwh_m2):
     lat,lon,annual_ghi_kwh_m2
@@ -47,6 +55,16 @@ def main():
             "CSV with irradiance grid: lat, lon, annual_ghi_kwh_m2. "
             "If omitted, NASA POWER is fetched automatically (no key), "
             "falling back to the Melbourne default GHI (~1850 kWh/m²/yr)."
+        ),
+    )
+    parser.add_argument(
+        "--barra-csv",
+        type=Path,
+        default=None,
+        help=(
+            "Pre-extracted hourly BARRA2 CSV (time_UTC, rsds_total_Wm2, temp_C). "
+            "Ingests real BARRA2 data without NCI OPeNDAP access. "
+            "Produces both annual GHI and monthly climate stats for Stage 3."
         ),
     )
     parser.add_argument(
@@ -86,11 +104,13 @@ def main():
     level = "DEBUG" if args.debug else "INFO"
     logger = setup_logging("stage2_cli", level=level)
 
-    if args.irradiance_file:
+    if args.barra_csv:
+        logger.info("Starting Stage 2 for suburb: %s (BARRA2 hourly CSV: %s)", args.suburb, args.barra_csv)
+    elif args.irradiance_file:
         logger.info("Starting Stage 2 for suburb: %s (irradiance from %s)", args.suburb, args.irradiance_file)
     else:
         logger.info(
-            "Starting Stage 2 for suburb: %s (no irradiance file — using Melbourne default GHI)",
+            "Starting Stage 2 for suburb: %s (no irradiance file — using NASA POWER / Melbourne default GHI)",
             args.suburb,
         )
 
@@ -98,6 +118,7 @@ def main():
         df = run_stage2(
             suburb_name=args.suburb,
             irradiance_file=args.irradiance_file,
+            barra_csv=args.barra_csv,
             start_year=args.start_year,
             end_year=args.end_year,
         )
