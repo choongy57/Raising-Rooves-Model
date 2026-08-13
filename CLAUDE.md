@@ -49,34 +49,43 @@ benefits of cool roof interventions across Melbourne suburbs.
 
 - Stage 2 cool roof delta calculation with per-building irradiance join.
   Physics: `energy_saved = GHI * footprint_area * (absorptance_before - 0.20)`.
-  Irradiance priority: BARRA2 (dormant, needs NCI) → user CSV → NASA POWER
-  (de-facto source, keyless, cached) → Melbourne default constant. Output
-  carries an `irradiance_source` column. The ERA5/CDS fallback was removed.
+  Irradiance priority: BARRA2 OPeNDAP (live since Aug 2026 — no NCI auth
+  needed) → BARRA2 hourly CSV (`--barra-csv`) → user CSV → NASA POWER →
+  Melbourne default. Output carries an `irradiance_source` column.
 - Stage 3 thermal modelling: per-building R_roof inferred from building
   attributes → heat-transfer fraction `U/(U+h_out)` → cooling load →
   electricity saved → CO2. See `DECISION_LOG.md` for the design rationale.
+  Cooling-only: heating penalty not wired in yet.
+- Gemini validation database: 507 buildings (Clayton 302, Carlton 205)
+  stored at `data/output/experiments/`. Resume-safe, no repeat API cost.
+- Seasonal analysis tool (`tools.seasonal_analysis`): monthly cooling
+  benefit vs heating penalty with R_roof sweeps. Key finding: they nearly
+  cancel in Melbourne.
+- Pitch defaults recalibrated against Gemini validation (residential 22.5°
+  → 12°). Per-suburb classifier quality multipliers in
+  `SUBURB_CLASSIFIER_QUALITY`.
+- Team-shared satellite tiles on Google Drive ("Raising Rooves - Shared
+  Data") with `tools.download_tiles` — teammates don't need a Maps API key.
 - Tracked sample fixture `data/samples/stage1_carlton.parquet` so a fresh
   clone runs Stages 2-3 with no API keys.
 
 ### Next Priorities (ranked — keep in sync with README Roadmap)
 
-1. Validate Stage 3 constants (`H_OUTSIDE`, `COOLING_FRACTION`, COP, R_roof
-   proxy table) against Stuart's NatHERS runs / AS-NZS 4859.1, and publish a
-   sensitivity analysis. All constants live in `config/settings.py`.
-2. Validate the HSV classifier by running the Gemini experiment
-   (`tools.run_gemini_osm_experiment`) on a stratified sample of 150-300
-   buildings per suburb and reporting agreement rates.
+1. Add the heating penalty to Stage 3 (wire `HEATING_FRACTION` into
+   `thermal_calculator.py` with CDD/HDD-driven monthly split). The seasonal
+   analysis proved it matches the cooling benefit in magnitude.
+2. Validate Stage 3 constants (`H_OUTSIDE`, `COOLING_FRACTION`,
+   `HEATING_FRACTION`, COP, R_roof proxy table) against Stuart's NatHERS
+   runs / AS-NZS 4859.1, and publish a sensitivity analysis.
 3. Replace rectangular bboxes with true ABS SA2 suburb polygons and an
    `inside_suburb` flag; report in-boundary totals.
-4. Wire measured DSM pitch into Stage 2 (it currently writes an orphaned
-   `stage1_{suburb}_with_pitch.parquet` no stage reads), or formally de-scope
-   it — pitch only affects roof-area/costing, not energy numbers.
+4. Filter non-building footprints from Stage 1 (Gemini found 24% of Clayton
+   OSM footprints aren't roofs — car parks, sheds, canopies).
 5. Expand to 3+ suburbs and use `tools.compare_suburbs` for FYP reporting.
-6. Connect real BARRA2 GHI when NCI project ob53 access is available
-   (flip `BARRA2_ENABLED` in `config/settings.py`).
+6. Run BARRA2 for a full climate normal (1990–2020); current runs use 2007.
 7. Move remaining in-module constants (absorptance tables in
-   `cool_roof_calculator.py`, assumed-pitch table in Stage 1 pipeline) into
-   `config/settings.py` for sensitivity sweeps.
+   `cool_roof_calculator.py`) into `config/settings.py` for sensitivity
+   sweeps.
 
 ## Architecture Rules
 

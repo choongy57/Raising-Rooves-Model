@@ -96,6 +96,17 @@ FOOTPRINT_SUPPLEMENT_GPKG = RAW_DIR / "footprints" / "buildings_index.gpkg"
 # Fallback: raw GeoJSONL (slower — full linear scan ~23 s per suburb).
 FOOTPRINT_SUPPLEMENT_GEOJSONL = RAW_DIR / "footprints" / "melbourne_overture.geojsonl"
 
+# ── HSV Classifier Per-Suburb Calibration ──────────────────────────────────────
+# Multiplier applied to HSV classifier confidence per suburb.  Calibrated against
+# Gemini 2.5 Flash validation (507 buildings, 2026-08-11).  Suburbs with clearer
+# satellite imagery get multipliers near 1.0; suburbs with shadow/blur/occlusion
+# get lower multipliers to reflect higher uncertainty.
+# Default 0.85 for suburbs not explicitly listed.
+SUBURB_CLASSIFIER_QUALITY: dict[str, float] = {
+    "carlton": 1.0,    # clear imagery, 80% Gemini confidence, 87% light_grey agree
+    "clayton": 0.65,   # shadowed imagery, 31% Gemini confidence, 52% light_grey agree
+}
+
 # ── Roof Pitch ────────────────────────────────────────────────────────────────
 
 # Pitch angle (degrees) below which a roof is classified as flat.

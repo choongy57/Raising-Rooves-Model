@@ -191,11 +191,16 @@ def _classify_buildings_from_tiles(
             continue
 
         result = classify_roof(tile_img, mask, segment_id=int(bldg.building_id.lstrip("r")) if bldg.building_id.lstrip("r").isdigit() else 0)
+
+        # Apply per-suburb image quality calibration (Gemini-validated, 2026-08-11)
+        from config.settings import SUBURB_CLASSIFIER_QUALITY
+        quality_mult = SUBURB_CLASSIFIER_QUALITY.get(suburb_key, 0.85)
+
         bldg.roof_material = result.material.value
         bldg.roof_colour = result.colour.value
         bldg.absorptance_estimate = result.absorptance_estimate
-        bldg.absorptance_uncertainty = result.absorptance_uncertainty
-        confidences[bldg.building_id] = result.confidence
+        bldg.absorptance_uncertainty = min(0.25, result.absorptance_uncertainty / quality_mult)
+        confidences[bldg.building_id] = round(result.confidence * quality_mult, 2)
         n_classified += 1
 
     logger.info(
@@ -217,10 +222,12 @@ def _assumed_pitch_deg(
     Return an assumed roof pitch (degrees) based on available building attributes.
 
     Priority: explicit roof_shape tag > multi-storey override > building_type lookup.
-    Default is 22.5° — the typical Melbourne suburban gable/hip pitch.
+    Default is 12° — calibrated against Gemini 2.5 Flash validation on 507 Melbourne
+    buildings (Clayton mean 5.7°, Carlton mean 3.7°).  The previous 22.5° default
+    was a 3-6x overestimate.  12° is conservative: higher than Gemini's nadir-biased
+    estimates but much closer to modern low-pitch Melbourne residential stock.
 
-    Used when no DSM is available. Stage 2 should treat this as an assumption
-    and run a sensitivity analysis at 15°, 22.5°, and 30°.
+    Used when no DSM is available. flagged as assumed in the pitch_source column.
     """
     # If OSM has an explicit roof shape, use that directly
     if roof_shape:
@@ -228,13 +235,13 @@ def _assumed_pitch_deg(
         if shape == "flat":
             return 0.0
         if shape in ("gabled", "hipped", "half-hipped"):
-            return 22.5
-        if shape == "pyramidal":
-            return 25.0
-        if shape == "skillion":
             return 15.0
+        if shape == "pyramidal":
+            return 20.0
+        if shape == "skillion":
+            return 10.0
         if shape in ("dome", "onion"):
-            return 30.0
+            return 25.0
 
     # Multi-storey buildings (4+ floors) are almost always flat-roofed
     if levels is not None and levels >= 4:
@@ -243,9 +250,9 @@ def _assumed_pitch_deg(
     # Building type lookup
     _FLAT = 0.0
     _LOW = 5.0
-    _SHALLOW = 15.0
-    _TYPICAL = 22.5
-    _STEEP = 30.0
+    _SHALLOW = 10.0
+    _TYPICAL = 12.0
+    _STEEP = 22.5
 
     flat_types = {"commercial", "retail", "office", "shop", "supermarket", "hotel",
                   "hospital", "civic", "public", "service", "transportation"}
@@ -266,7 +273,8 @@ def _assumed_pitch_deg(
         if bt in steep_types:
             return _STEEP
 
-    # Residential types and generic "yes" → typical Melbourne suburban pitch
+    # Residential types and generic "yes" → modern Melbourne low-pitch
+    # Calibrated against Gemini validation (507 buildings, 2026-08-11).
     return _TYPICAL
 
 

@@ -10,14 +10,17 @@ for user-facing setup, commands, and project explanation.
 
 ## Project State
 
-- Stage 1 roof segmentation: complete.
-- Roof pitch extraction from DSM: complete as a standalone tool. Its output
-  (`stage1_{suburb}_with_pitch.parquet`) is NOT yet consumed by Stage 2/3.
-- Stage 2 irradiance and cool roof delta: working. NASA POWER is the de-facto
-  irradiance source (free, keyless, ~50 km); BARRA2 is dormant until NCI
-  project ob53 access lands. The ERA5/CDS fallback was removed.
+- Stage 1 roof segmentation: complete. Pitch defaults calibrated against
+  Gemini validation (residential 12°, Aug 2026). Per-suburb classifier
+  quality multipliers in `SUBURB_CLASSIFIER_QUALITY`.
+- Stage 2 irradiance and cool roof delta: working. BARRA2 OPeNDAP is the
+  primary source (no NCI auth needed — Aug 2026 discovery); `--barra-csv`
+  ingests pre-extracted hourly CSV; NASA POWER is the fallback.
 - Stage 3 thermal modelling: working — per-building R_roof heat-ingress model
   (see `DECISION_LOG.md`). Constants still need validation against NatHERS.
+  Cooling-only: heating penalty not yet wired in (see seasonal_analysis).
+- Seasonal analysis: `tools.seasonal_analysis` shows cooling benefit ≈
+  heating penalty in Melbourne (net near zero).
 - Persistence: no database; CSV, Parquet, JSON, and images under `data/`.
 - Team: Ryan, Seamus, Angus, Flynn, Maggie, Gabrielle.
 - Supervisor: Stuart.
@@ -147,8 +150,10 @@ python -m pytest tests/
 | Satellite imagery | Google Maps Static API | `GOOGLE_MAPS_API_KEY` in `.env` | Active |
 | Building footprints | OpenStreetMap Overpass API | No key | Active |
 | Building footprints supplement | VicMap BUILDING_POLYGON | Manual SHP download | Optional |
-| Irradiance (active) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | Active |
-| Irradiance (future) | BARRA2 via NCI THREDDS/OPeNDAP | NCI project ob53 access required | Dormant |
+| Irradiance (primary) | BARRA2 via NCI THREDDS/OPeNDAP | No auth needed (Aug 2026) | Active |
+| Irradiance (CSV) | Pre-extracted hourly BARRA2 CSV (`--barra-csv`) | No key | Active |
+| Irradiance (fallback) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | Active |
+| Roof validation | Gemini 2.5 Flash | `GEMINI_API_KEY` in `.env` | 507 buildings validated, stored in `data/output/experiments/` |
 | DSM pitch | ELVIS 1 m LiDAR | Manual download | Recommended |
 | DSM inner-city pitch | City of Melbourne Open Data DSM | Manual download | Useful for inner suburbs |
 | DSM coarse fallback | OpenTopography COP30 | `OPENTOPO_API_KEY` in `.env` | Optional fallback |

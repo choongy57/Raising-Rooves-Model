@@ -690,8 +690,19 @@ def run_gemini_osm_experiment(
     rows: list[dict[str, Any]] = []
     processed = 0
     attempted = 0
+    skipped_already_assessed = 0
     skipped_missing_inputs = 0
     candidates = df.iloc[start_index:]
+
+    # Report resume state before processing
+    if completed:
+        logger.info(
+            "%d buildings already assessed in %s — will skip (no API cost).",
+            len(completed), jsonl_path.name,
+        )
+        logger.info(
+            "Use --overwrite to clear previous results and start fresh."
+        )
 
     logger.info(
         "Gemini+OSM experiment for %s: collecting up to %d buildings from row %d",
@@ -706,7 +717,7 @@ def run_gemini_osm_experiment(
 
         building_id = str(row["building_id"])
         if building_id in completed:
-            logger.info("Skipping %s: already in %s", building_id, jsonl_path.name)
+            skipped_already_assessed += 1
             continue
 
         crop = build_building_crop(row, polygons[row_index], suburb_name, zoom)
@@ -781,10 +792,12 @@ def run_gemini_osm_experiment(
     if jsonl_path.exists():
         _write_csv_from_jsonl(jsonl_path, csv_path)
     logger.info(
-        "Gemini+OSM experiment summary: %d processed, %d attempted, %d skipped before crop/API",
+        "Gemini+OSM experiment summary: %d new, %d already assessed (no cost), "
+        "%d skipped (missing tiles), %d total in DB",
         processed,
-        attempted,
+        skipped_already_assessed,
         skipped_missing_inputs,
+        len(completed) + processed,
     )
     logger.info("Gemini+OSM experiment wrote %s and %s", jsonl_path, csv_path)
     return pd.DataFrame(rows)
