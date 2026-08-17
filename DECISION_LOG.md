@@ -70,6 +70,10 @@ LiDAR source is integrated).
 
 ## 2026-07-01 — Pitch: assumed from building type / OSM roof:shape tag
 
+**Superseded 2026-08-13** — the "typical" residential default below was recalibrated
+from 22.5° to 12° against Gemini validation data. See that entry near the end of this
+log; the mapping logic and rejected alternatives here are otherwise unchanged.
+
 **Decision:** Use `_assumed_pitch_deg()` which maps OSM roof:shape and building_type
 to typical Melbourne pitch values (0° flat, 5° industrial, 15° shallow, 22.5° typical
 residential, 30° heritage/church). Flag all as pitch_source="assumed".
@@ -178,3 +182,112 @@ fraction against Stuart's NatHERS runs.
 
 **Code affected:** `config/settings.py`, `stage3_thermal/thermal_calculator.py`,
 `stage3_thermal/pipeline.py`, `tests/test_stage3_thermal.py`, `README.md`.
+
+---
+
+## 2026-05-01 — Irradiance source: NASA POWER API over Melbourne constant
+
+**Decision:** Stage 2 fetches real annual GHI from NASA POWER's free REST API (no key
+required) instead of using a fixed Melbourne assumption, caching responses under
+`data/raw/nasa_power/`.
+
+**Why:** The assumed constant (1,850 kWh/m²/yr) overstated Carlton's measured GHI
+(1,646 kWh/m²/yr) by 11% — a systematic bias into every downstream Stage 2/3 figure.
+A free, no-key, per-location API removes that bias for negligible added complexity.
+
+**Note:** This became the fallback tier, not the primary source, once BARRA2 OPeNDAP
+went live (see 2026-08-09 entry below).
+
+---
+
+## 2026-05-01 — Google Sheets QA ticket system: built, later removed
+
+**Decision (2026-05-01):** Built `tools/ticket_manager.py`, `tools/triage_agent.py`,
+`tools/test_monitor.py` to auto-triage test failures into a Google Sheet as structured
+tickets.
+
+**Reversed (2026-08-09):** Removed. The ticket workflow added Google Sheets API
+coupling and triage overhead that didn't pay for itself once the team moved to fixing
+issues directly off `pytest` output during active development. No replacement tracker;
+`git log` plus this log cover the "what changed and why" need instead.
+
+---
+
+## 2026-08-09 — Irradiance source priority: BARRA2 OPeNDAP as live default
+
+**Decision:** Stage 2's irradiance source priority is now BARRA2 OPeNDAP (live,
+streamed from NCI THREDDS) → BARRA2 hourly CSV (`--barra-csv`, for offline/cached runs)
+→ user-supplied CSV → NASA POWER → Melbourne default constant. Every output row carries
+an `irradiance_source` column recording which tier was used.
+
+**Why:** BARRA2 is a reanalysis product built for the Australian region at higher
+spatiotemporal resolution than NASA POWER, and — as of Aug 2026 — is reachable over
+public OPeNDAP without NCI authentication, removing the earlier blocker to using it as
+the primary source. NASA POWER and the Melbourne constant remain as fallbacks for
+environments where OPeNDAP access is unavailable or slow.
+
+**Rejected:**
+- *NASA POWER as sole source* — coarser resolution, not Australia-specific; kept as
+  fallback rather than replaced.
+- *Requiring `--barra-csv` always* — manual CSV prep is a needless step now that the
+  live OPeNDAP path works with no auth.
+
+**Follow-up:** current BARRA2 runs use a single reference year (2007); roadmap item to
+run a full 1990–2020 climate normal instead.
+
+---
+
+## 2026-08-09 — Gemini Vision as a validation harness, not a primary classifier
+
+**Decision:** Use the Gemini Vision API to build a labelled validation database
+(507 buildings: Clayton 302, Carlton 205, stored under `data/output/experiments/`,
+resume-safe so repeat runs don't re-incur API cost) that the HSV pixel classifier and
+Stage 1 pitch defaults are checked against — not to replace the HSV classifier itself.
+
+**Why:** The 2026-07-01 material/colour decision rejected Gemini as the *primary*
+classifier because it lacked a labelled Melbourne validation set to justify the added
+cost/latency. Building that validation set was the missing piece, not a reason to
+abandon HSV — Gemini is now used exactly where it was originally proposed as a future
+upgrade path: to validate and calibrate the cheaper method, e.g. Gemini found 24% of
+Clayton OSM footprints aren't roofs (car parks, sheds, canopies), and the pitch default
+recalibration below was derived from this dataset.
+
+**Rejected:** Switching Stage 1 wholesale to Gemini per-building classification —
+still not warranted; per-query cost and latency don't scale to suburb-wide runs, and
+the validation role captures most of the accuracy benefit at a fraction of the cost.
+
+---
+
+## 2026-08-09 — Seasonal analysis: cooling benefit vs heating penalty
+
+**Decision:** Added `tools.seasonal_analysis` to compute monthly cooling benefit vs
+heating penalty under R_roof sweeps, ahead of wiring a heating penalty into Stage 3
+proper.
+
+**Why:** Before spending implementation effort on `HEATING_FRACTION` in
+`thermal_calculator.py` (roadmap item 1), we needed to know whether the heating penalty
+would materially change the annual figure. Finding: in Melbourne's climate, the monthly
+cooling benefit and heating penalty nearly cancel — informs how much to weight this
+against the other unvalidated Stage 3 constants (roadmap item 2).
+
+---
+
+## 2026-08-13 — Pitch defaults recalibrated: residential 22.5° → 12°
+
+**Decision:** Lowered the assumed residential pitch default from 22.5° to 12°, and
+added per-suburb classifier quality multipliers (`SUBURB_CLASSIFIER_QUALITY` in
+`config/settings.py`).
+
+**Why:** The 2026-07-01 pitch assumption was a typical-Melbourne-residential estimate
+with no local ground truth. The Gemini validation database (2026-08-09 entry) gave a
+real, if still imperfect, check against Melbourne building stock and showed the flatter
+default fits observed roofs better than the original assumption. Per-suburb quality
+multipliers account for classifier accuracy varying with tile coverage and roof style
+mix between Clayton and Carlton.
+
+**Tradeoffs:** Still an assumed default, not measured pitch — the underlying limitation
+from the 2026-07-01 entry (no LiDAR/DSM for these suburbs) is unchanged. The Gemini
+validation set itself is 507 buildings across two suburbs, not a statistically
+exhaustive ground truth.
+
+**Code affected:** `config/settings.py`.

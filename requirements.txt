@@ -16,7 +16,7 @@ opencv-python>=4.8
 # Gemini Vision API (HSV classifier validation experiment)
 google-genai>=1.0
 
-# Climate data (BARRA2 via NCI THREDDS/OPeNDAP; requires NCI access)
+# Climate data (BARRA2 via NCI THREDDS/OPeNDAP; public access, no NCI auth needed as of Aug 2026)
 xarray>=2024.1
 netCDF4>=1.6
 
