@@ -70,7 +70,7 @@ PITCH_BASES = {
     "insufficient",
     "not_observable",
 }
-QA_ACTIONS = {"accept", "accept_with_warning", "exclude", "needs_manual_review", "needs_dsm"}
+QA_ACTIONS = {"accept", "accept_with_warning", "exclude", "needs_manual_review", "pitch_uncertain"}
 QUALITY_FLAGS = {
     "tree_cover",
     "shadow",
@@ -294,8 +294,10 @@ Important constraints:
   visual evidence.
 - qa_action should be accept only for high-confidence, low-warning results.
   Use accept_with_warning for usable but imperfect results, needs_manual_review
-  for ambiguous boundary/material/visibility, needs_dsm when pitch is the main
-  missing value, and exclude when no roof is visible.
+  for ambiguous boundary/material/visibility, pitch_uncertain when pitch is the
+  main missing value (pitch is never measured from elevation data — only
+  visually estimated, so this just flags low confidence, not a follow-up
+  action), and exclude when no roof is visible.
 - Do not use surrounding houses to infer this roof.
 - suggested_boundary_polygon_px is optional. Only return a simple 4-8 vertex
   polygon when the visible roof outline is clearly separable inside the crop.
@@ -540,7 +542,7 @@ def _qa_action(raw: dict[str, Any], quality_flags: list[str], qa_score: float) -
             and pitch_basis != "flat_roof_visual"
         )
     ):
-        return "needs_dsm"
+        return "pitch_uncertain"
     if model_action == "accept" and qa_score < 0.8:
         return "accept_with_warning"
     return model_action
@@ -563,7 +565,7 @@ def normalise_assessment(
 
     qa_usable = (
         bool(raw.get("usable_for_stage1", False))
-        and qa_action in {"accept", "accept_with_warning", "needs_dsm"}
+        and qa_action in {"accept", "accept_with_warning", "pitch_uncertain"}
     )
 
     return GeminiRoofAssessment(

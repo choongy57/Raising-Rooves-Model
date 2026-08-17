@@ -217,35 +217,49 @@ def _assumed_pitch_deg(
     building_type: str | None,
     roof_shape: str | None,
     levels: int | None,
-) -> float:
+) -> tuple[float, str]:
     """
-    Return an assumed roof pitch (degrees) based on available building attributes.
+    Return an assumed roof pitch (degrees) and the basis for that assumption,
+    based on available building attributes.
 
-    Priority: explicit roof_shape tag > multi-storey override > building_type lookup.
-    Default is 12° — calibrated against Gemini 2.5 Flash validation on 507 Melbourne
-    buildings (Clayton mean 5.7°, Carlton mean 3.7°).  The previous 22.5° default
-    was a 3-6x overestimate.  12° is conservative: higher than Gemini's nadir-biased
-    estimates but much closer to modern low-pitch Melbourne residential stock.
+    Priority: explicit roof_shape tag > multi-storey override > building_type lookup
+    > residential default. Default is 12° — calibrated against Gemini 2.5 Flash
+    validation on 507 Melbourne buildings (Clayton mean 5.7°, Carlton mean 3.7°).
+    The previous 22.5° default was a 3-6x overestimate. 12° is conservative: higher
+    than Gemini's nadir-biased estimates but much closer to modern low-pitch
+    Melbourne residential stock.
 
-    Used when no DSM is available. flagged as assumed in the pitch_source column.
+    We do not measure pitch from LiDAR/DSM — trialled and dropped, see
+    DECISION_LOG.md 2026-08-17 (elevation data wasn't precise enough for
+    reliable per-building plane fits). Pitch is assumed for every building;
+    the returned basis string (written to the pitch_basis column) records
+    which rule produced the value so assumptions stay auditable.
+
+    Returns:
+        (pitch_deg, pitch_basis) — pitch_basis is one of:
+            "roof_shape:<tag>"   — OSM roof:shape tag matched directly
+            "levels>=4"          — multi-storey override
+            "building_type:<tag>" — OSM building type/class lookup
+            "residential_default" — fallback for residential / untyped buildings
     """
     # If OSM has an explicit roof shape, use that directly
     if roof_shape:
         shape = roof_shape.lower()
+        basis = f"roof_shape:{shape}"
         if shape == "flat":
-            return 0.0
+            return 0.0, basis
         if shape in ("gabled", "hipped", "half-hipped"):
-            return 15.0
+            return 15.0, basis
         if shape == "pyramidal":
-            return 20.0
+            return 20.0, basis
         if shape == "skillion":
-            return 10.0
+            return 10.0, basis
         if shape in ("dome", "onion"):
-            return 25.0
+            return 25.0, basis
 
     # Multi-storey buildings (4+ floors) are almost always flat-roofed
     if levels is not None and levels >= 4:
-        return 0.0
+        return 0.0, "levels>=4"
 
     # Building type lookup
     _FLAT = 0.0
@@ -264,18 +278,19 @@ def _assumed_pitch_deg(
 
     if building_type:
         bt = building_type.lower()
+        basis = f"building_type:{bt}"
         if bt in flat_types:
-            return _FLAT
+            return _FLAT, basis
         if bt in low_types:
-            return _LOW
+            return _LOW, basis
         if bt in shallow_types:
-            return _SHALLOW
+            return _SHALLOW, basis
         if bt in steep_types:
-            return _STEEP
+            return _STEEP, basis
 
     # Residential types and generic "yes" → modern Melbourne low-pitch
     # Calibrated against Gemini validation (507 buildings, 2026-08-11).
-    return _TYPICAL
+    return _TYPICAL, "residential_default"
 
 
 def _orientation_from_polygon(polygon_latlon: list[list[float]]) -> Optional[float]:
@@ -334,7 +349,9 @@ def _building_to_row(
     centroid_lat = sum(lats) / len(lats) if lats else 0.0
     centroid_lon = sum(lons) / len(lons) if lons else 0.0
 
-    pitch_deg = _assumed_pitch_deg(building.building_type, building.roof_shape, building.levels)
+    pitch_deg, pitch_basis = _assumed_pitch_deg(
+        building.building_type, building.roof_shape, building.levels
+    )
     is_flat = pitch_deg < FLAT_PITCH_THRESHOLD_DEG
 
     # Actual roof surface area accounts for pitch — for flat roofs it equals footprint area.
@@ -358,6 +375,7 @@ def _building_to_row(
         "roof_colour": building.roof_colour,
         "roof_shape": building.roof_shape,
         "pitch_deg": pitch_deg,
+        "pitch_basis": pitch_basis,
         "pitch_source": "assumed",
         "is_flat": is_flat,
         "orientation_deg": _orientation_from_polygon(building.polygon_latlon),
@@ -458,7 +476,7 @@ def run_stage1(
     Returns:
         DataFrame with columns: suburb, building_id, roof_id, area_m2, lat, lon, source,
         building_type, levels, roof_material, roof_colour, roof_shape, pitch_deg,
-        classifier_confidence.
+        pitch_basis, pitch_source, classifier_confidence.
     """
     suburb = get_suburb(suburb_name)
     suburb_key = suburb.key
@@ -553,7 +571,7 @@ def run_stage1(
     logger.info("CSV:     %s", csv_path)
 
     # Polygon sidecar — list of [[lon, lat], ...] in the same row order as the
-    # parquet. Used by tools/extract_pitch.py to clip the DSM per building.
+    # parquet. Used by tools/visualise_results.py to draw building outlines.
     polygon_list = [b.polygon_latlon for b in buildings]
     with open(polygons_path, "w") as fh:
         json.dump(polygon_list, fh, separators=(",", ":"))

@@ -42,8 +42,8 @@ benefits of cool roof interventions across Melbourne suburbs.
 - Optional VicMap building polygon merge.
 - HSV roof material and colour classifier for missing OSM roof tags.
 - Annotated Stage 1 visualisation PNG output.
-- Standalone roof pitch extraction tool using DSM GeoTIFF input.
-- Stage 1 polygon sidecar JSON for per-building pitch extraction.
+- Stage 1 polygon sidecar JSON, used by `tools.visualise_results` for map
+  overlays.
 
 ### Completed (recently)
 
@@ -64,6 +64,13 @@ benefits of cool roof interventions across Melbourne suburbs.
 - Pitch defaults recalibrated against Gemini validation (residential 22.5°
   → 12°). Per-suburb classifier quality multipliers in
   `SUBURB_CLASSIFIER_QUALITY`.
+- DSM/LiDAR roof pitch extraction (`dsm_processor.py`, `pitch_extractor.py`,
+  `tools.extract_pitch`) removed 2026-08-17 — elevation data wasn't precise
+  enough for defensible per-building plane fits. Pitch is assumed-only for
+  every building; Stage 1 output now carries a `pitch_basis` column recording
+  which rule (`roof_shape:*`, `levels>=4`, `building_type:*`,
+  `residential_default`) produced each `pitch_deg` value. See
+  `DECISION_LOG.md`.
 - Team-shared satellite tiles on Google Drive ("Raising Rooves - Shared
   Data") with `tools.download_tiles` — teammates don't need a Maps API key.
 - Tracked sample fixture `data/samples/stage1_carlton.parquet` so a fresh
@@ -166,10 +173,11 @@ Use this as the quick checklist when Ryan asks "what APIs/data do we use?"
 | Building footprints supplement | VicMap BUILDING_POLYGON | Manual SHP download from DataShare | Optional merge |
 | Irradiance (active) | BARRA2 via NCI THREDDS/OPeNDAP | No key needed (public OPeNDAP) | Active Stage 2 source |
 | Irradiance (fallback) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | Fallback Stage 2 source |
-| DSM pitch data | ELVIS 1 m LiDAR | Manual download, free registration | Recommended pitch source |
-| DSM inner-city fallback | City of Melbourne Open Data DSM | Manual download | Useful for inner suburbs |
-| DSM coarse fallback | OpenTopography COP30 | `OPENTOPO_API_KEY` in `.env` | Programmatic fallback |
 | Suburb boundaries | ABS SA2 shapefiles / manual bbox | Manual data prep | Needed for robust coverage |
+
+DSM/LiDAR pitch sources (ELVIS 1 m, City of Melbourne Open Data, OpenTopography
+COP30) are no longer used — trialled and dropped 2026-08-17 as insufficiently
+precise. Pitch is assumed only; see `pitch_basis` in Stage 1 output.
 
 Never paste API keys into notes, commits, chat, or screenshots.
 

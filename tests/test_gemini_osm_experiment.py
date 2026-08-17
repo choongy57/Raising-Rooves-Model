@@ -69,7 +69,7 @@ def test_normalise_assessment_clamps_and_defaults_values():
     assert result.warnings == ["single warning"]
 
 
-def test_non_flat_visual_pitch_routes_to_dsm_even_with_number():
+def test_non_flat_visual_pitch_is_uncertain_even_with_number():
     crop = CropContext(
         image=Image.new("RGB", (100, 80)),
         tile_path=Path("tile.png"),
@@ -106,5 +106,5 @@ def test_non_flat_visual_pitch_routes_to_dsm_even_with_number():
 
     result = normalise_assessment("b2", raw, crop, "gemini-test")
 
-    assert result.qa_action == "needs_dsm"
+    assert result.qa_action == "pitch_uncertain"
     assert result.usable_for_stage1 is True

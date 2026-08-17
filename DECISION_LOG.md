@@ -57,14 +57,14 @@ suburb-scale aggregate statistics (N-S vs E-W bias analysis).
 
 **Rejected:**
 - *OSM roof:direction tag* — present on < 1% of Melbourne buildings.
-- *LiDAR-derived aspect* — pitch_extractor.py already computes aspect_deg when a DSM
-  is available. Will supersede this estimate for LiDAR-covered buildings.
+- *LiDAR-derived aspect* — a `pitch_extractor.py` module once computed aspect_deg
+  from DSM plane fits. Removed 2026-08-17 (see that entry) — this footprint-normal
+  estimate is now the only orientation source.
 - *OBB (oriented bounding box) major axis* — more robust for irregular polygons but
   adds dependency on scipy; the longest-edge method is adequate and simpler.
 
 **Limitation:** For L-shaped or irregular buildings the longest edge may not represent
-the main roof ridge. Flag: orientation_source = "footprint" (not yet in schema, add if
-LiDAR source is integrated).
+the main roof ridge. Flag: orientation_source = "footprint" (not yet in schema).
 
 ---
 
@@ -73,6 +73,10 @@ LiDAR source is integrated).
 **Superseded 2026-08-13** — the "typical" residential default below was recalibrated
 from 22.5° to 12° against Gemini validation data. See that entry near the end of this
 log; the mapping logic and rejected alternatives here are otherwise unchanged.
+
+**Superseded 2026-08-17** — the "When LiDAR becomes available" plan below was acted
+on, trialled, and reversed: DSM/LiDAR pitch extraction was removed. Assumed pitch is
+now the permanent method, not an interim one. See that entry near the end of this log.
 
 **Decision:** Use `_assumed_pitch_deg()` which maps OSM roof:shape and building_type
 to typical Melbourne pitch values (0° flat, 5° industrial, 15° shallow, 22.5° typical
@@ -122,7 +126,9 @@ at 22.5° nominal → ±4% area error.
 - `stage1_{suburb}.parquet` — typed, compressed, fast for downstream stages
 - `stage1_{suburb}.csv` — human-readable, Excel-compatible
 - `stage1_{suburb}.geojson` — full geometry + all attributes; loadable in QGIS/Mapbox
-- `stage1_{suburb}_polygons.json` — ordered polygon list for DSM pitch extraction tool
+- `stage1_{suburb}_polygons.json` — ordered polygon list, used by
+  `tools.visualise_results` for map overlays (originally also fed the DSM pitch
+  extraction tool, removed 2026-08-17)
 
 **Why:** GeoJSON enables spatial QA in any GIS tool without extra processing. Parquet is
 the canonical format for Stage 2/3. CSV is for team members without Python.
@@ -291,3 +297,48 @@ validation set itself is 507 buildings across two suburbs, not a statistically
 exhaustive ground truth.
 
 **Code affected:** `config/settings.py`.
+
+---
+
+## 2026-08-17 — DSM/LiDAR pitch extraction removed; assumed pitch is permanent
+
+**Decision:** Removed the DSM-based roof pitch extraction path entirely
+(`stage1_segmentation/dsm_processor.py`, `stage1_segmentation/pitch_extractor.py`,
+`tools/extract_pitch.py`, and the `rooves-extract-pitch` console entry point), along
+with the `rasterio` dependency and the `OPENTOPO_API_KEY` setting. `_assumed_pitch_deg()`
+in `stage1_segmentation/pipeline.py` is now the sole source of `pitch_deg` for every
+building. Added a `pitch_basis` column to Stage 1 output (CSV/Parquet/GeoJSON), written
+next to `pitch_deg`/`pitch_source`, recording exactly which rule produced the value:
+`roof_shape:<tag>`, `levels>=4`, `building_type:<tag>`, or `residential_default`.
+
+**Why:** The 2026-07-01 pitch entry left the door open for LiDAR to supersede the
+assumption once available. ELVIS 1 m DSM data was obtained and run through the
+RANSAC+SVD plane-fitting tool (`pitch_extractor.py`), but the team judged the resulting
+per-building pitch measurements not precise enough to trust over the calibrated
+assumption — consistent with the "orphaned output" note already in `README.md`'s Known
+Limitations before this cleanup. Rather than keep dead DSM code and file-download docs
+around, we removed it and made the assumption-based approach the permanent method.
+`pitch_basis` replaces the DSM output as the auditability mechanism: instead of trusting
+a plane fit, every assumed value can be traced back to the specific OSM tag or building
+attribute that produced it.
+
+**Rejected:**
+- *Keep the DSM tool as an optional/unused path* — dead code with real maintenance cost
+  (rasterio dependency, ELVIS/COP30 download docs, a whole test file) for a method the
+  team won't use. Removing it is simpler than documenting "exists but don't use it."
+- *Re-attempt DSM with a different resolution or provider* — not pursued; the team's
+  priority list (see README Roadmap) has higher-value items (heating penalty, Stage 3
+  constant validation, true suburb boundaries) than re-chasing elevation data.
+
+**Tradeoffs:** Pitch remains unmeasured for every building. `roof_surface_area_m2`
+(Stage 1) inherits the same uncertainty as before — this was already true in practice
+since the DSM path was never wired into the main pipeline or Stage 2/3. The
+`pitch_uncertain` Gemini QA action (renamed from `needs_dsm` in
+`gemini_osm_experiment.py`) now correctly signals "low visual confidence" rather than
+implying a DSM follow-up that no longer exists.
+
+**Code affected:** `stage1_segmentation/pipeline.py`, `stage1_segmentation/gemini_osm_experiment.py`,
+`config/settings.py`, `requirements.txt`, `pyproject.toml`, `.env.example`,
+`tests/test_stage1_attribution.py`, `tests/test_gemini_osm_experiment.py`. Deleted:
+`stage1_segmentation/dsm_processor.py`, `stage1_segmentation/pitch_extractor.py`,
+`tools/extract_pitch.py`, `tests/test_extract_pitch_import.py`.

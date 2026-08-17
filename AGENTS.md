@@ -82,7 +82,9 @@ for user-facing setup, commands, and project explanation.
 - Optional VicMap BUILDING_POLYGON merge.
 - HSV roof material/colour classification.
 - Stage 1 CSV, Parquet, polygon sidecar, and annotated PNG outputs.
-- DSM-based roof pitch extraction tool.
+- DSM/LiDAR-based roof pitch extraction was built, trialled, and then removed
+  (2026-08-17) — elevation data wasn't precise enough. Pitch is assumed only;
+  see `pitch_basis` column.
 
 ### Done (recently)
 
@@ -121,14 +123,6 @@ python -m stage1_segmentation.run_stage1 --suburb "Richmond" --max-tiles 10
 python -m stage1_segmentation.run_stage1 --list-suburbs
 ```
 
-### Pitch Extraction
-
-```bash
-python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif
-python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif --debug
-python -m tools.extract_pitch --suburb Clayton --download-cop30
-```
-
 ### Stage 2
 
 ```bash
@@ -154,10 +148,10 @@ python -m pytest tests/
 | Irradiance (CSV) | Pre-extracted hourly BARRA2 CSV (`--barra-csv`) | No key | Active |
 | Irradiance (fallback) | NASA POWER REST API | No key; cached under `data/raw/nasa_power/` | Active |
 | Roof validation | Gemini 2.5 Flash | `GEMINI_API_KEY` in `.env` | 507 buildings validated, stored in `data/output/experiments/` |
-| DSM pitch | ELVIS 1 m LiDAR | Manual download | Recommended |
-| DSM inner-city pitch | City of Melbourne Open Data DSM | Manual download | Useful for inner suburbs |
-| DSM coarse fallback | OpenTopography COP30 | `OPENTOPO_API_KEY` in `.env` | Optional fallback |
 | Suburb boundaries | ABS SA2 shapefiles/manual bbox | Manual prep | Needed for expansion |
+
+DSM/LiDAR sources for pitch (ELVIS 1 m, City of Melbourne DSM, OpenTopography
+COP30) were trialled and removed — see `DECISION_LOG.md` 2026-08-17.
 
 ## Stage Summaries
 
@@ -179,24 +173,6 @@ Outputs:
 - `data/output/stage1_{suburb}.csv`
 - `data/output/stage1_{suburb}_annotated.png`
 - `data/output/stage1_{suburb}_polygons.json`
-
-### Roof Pitch Extraction
-
-Input: Stage 1 output plus DSM GeoTIFF.
-
-Process:
-
-- Extract DSM points inside each building polygon.
-- Remove Z-spike outliers.
-- Fit dominant roof plane with RANSAC.
-- Refit inliers with SVD.
-- Save pitch, aspect, RMSE, point counts, and flags.
-
-Outputs:
-
-- `data/output/stage1_{suburb}_with_pitch.parquet`
-- `data/output/stage1_{suburb}_with_pitch.csv`
-- `data/output/stage1_{suburb}_pitch_map.png`
 
 ### Stage 2 - Cool Roof Delta
 

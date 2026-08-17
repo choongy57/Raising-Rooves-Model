@@ -34,8 +34,10 @@ see Setup below.
 - Stage 1 roof segmentation: working. Pitch defaults calibrated against Gemini
   validation (507 buildings, Aug 2026): residential 12°, gabled/hipped 15°.
   Per-suburb classifier quality multipliers in `SUBURB_CLASSIFIER_QUALITY`.
-- Roof pitch extraction from DSM: working as a standalone tool. Output is NOT
-  consumed by Stage 2/3 — pitch comes from the calibrated assumptions above.
+- Roof pitch: assumed only, from OSM `roof:shape`/`building_type`/storeys —
+  see `pitch_basis` in Stage 1 Columns below. DSM/LiDAR pitch measurement was
+  trialled and dropped (elevation data wasn't precise enough); the DSM tooling
+  has been removed from the codebase.
 - Stage 2 irradiance and cool roof delta: working. BARRA2 via NCI THREDDS
   OPeNDAP is the primary source (no auth needed — discovered Aug 2026), with
   NASA POWER and user CSV as fallbacks. A pre-extracted hourly BARRA2 CSV can
@@ -61,7 +63,7 @@ For a configured Melbourne suburb, the pipeline:
 2. Downloads or reuses Google Maps satellite tiles.
 3. Queries building footprints from OpenStreetMap and/or local footprint data.
 4. Classifies roof colour/material from satellite pixels where tags are missing.
-5. Assigns roof pitch from assumptions, or uses the standalone DSM pitch tool.
+5. Assigns roof pitch from assumptions (OSM `roof:shape`, `building_type`, storeys).
 6. Joins buildings to annual solar irradiance (NASA POWER, user CSV, or BARRA2).
 7. Estimates per-building reduction in absorbed solar energy from a cool roof
    treatment.
@@ -88,10 +90,6 @@ data/output/stage1_{suburb}.parquet
 data/output/stage1_{suburb}.csv
 data/output/stage1_{suburb}_polygons.json
 data/output/stage1_{suburb}_annotated.png
-        |
-        v
-Optional pitch improvement
-  tools.extract_pitch + DSM GeoTIFF
         |
         v
 Stage 2: irradiance + cool roof delta
@@ -141,13 +139,11 @@ data/output/stage3_{suburb}_report.html
   `python -m tools.build_footprint_index`
 - Real irradiance CSV with columns:
   `lat, lon, annual_ghi_kwh_m2`
-- DSM GeoTIFF for measured roof pitch, ideally 1 m LiDAR.
 - True suburb boundary polygon for final reporting. The current config uses
   rectangular bboxes, not real suburb polygons.
 
 ### Optional API Keys
 
-- `OPENTOPO_API_KEY` for programmatic COP30 DSM fallback.
 - `GEMINI_API_KEY` for the opt-in Gemini roof-assessment experiment (free tier
   at https://aistudio.google.com/app/apikey).
 
@@ -238,12 +234,14 @@ Outputs:
 - `data/output/experiments/gemini_osm_stage1_{suburb}.jsonl`
 - `data/output/experiments/gemini_osm_stage1_{suburb}.csv`
 
-The Gemini pitch value is a coarse visual estimate only. Use DSM extraction for
-measured pitch wherever DSM coverage exists. The experiment defaults to high
-Gemini media resolution because small roof details are important for this task.
-Its `qa_action` field is the local safety gate: boundary mismatches route to
-manual review, non-flat visual pitch routes to DSM, and flat/attribute-only
-results may be accepted when confidence and image quality are high.
+The Gemini pitch value is a coarse visual estimate only — nadir satellite
+imagery cannot measure pitch, and we don't have a DSM/LiDAR source to cross-
+check it against. The experiment defaults to high Gemini media resolution
+because small roof details are important for this task. Its `qa_action`
+field is the local safety gate: boundary mismatches route to manual review,
+non-flat visual pitch is flagged `pitch_uncertain` (low confidence, not a
+follow-up action), and flat/attribute-only results may be accepted when
+confidence and image quality are high.
 
 ### Stage 1 Outputs
 
@@ -251,7 +249,7 @@ results may be accepted when confidence and image quality are high.
 | --- | --- |
 | `stage1_{suburb}.csv` | Per-building CSV for inspection and reports |
 | `stage1_{suburb}.parquet` | Canonical Stage 1 table used by Stage 2 |
-| `stage1_{suburb}_polygons.json` | Building polygon sidecar used by pitch extraction |
+| `stage1_{suburb}_polygons.json` | Building polygon sidecar used by `tools.visualise_results` for map overlays |
 | `stage1_{suburb}_annotated.png` | Stitched satellite image with building overlays |
 
 ### Stage 1 Columns
@@ -269,7 +267,9 @@ results may be accepted when confidence and image quality are high.
 | `roof_material` | OSM/source tag or HSV classifier estimate |
 | `roof_colour` | OSM/source tag or HSV classifier estimate |
 | `roof_shape` | Roof shape tag where available |
-| `pitch_deg` | Assumed roof pitch unless DSM pitch has been applied |
+| `pitch_deg` | Assumed roof pitch in degrees (see `_assumed_pitch_deg` in `stage1_segmentation/pipeline.py`) |
+| `pitch_basis` | Which rule produced `pitch_deg`: `roof_shape:<tag>`, `levels>=4`, `building_type:<tag>`, or `residential_default` |
+| `pitch_source` | Always `assumed` — pitch is never measured (DSM/LiDAR pitch extraction was trialled and dropped, see Known Limitations) |
 | `classifier_confidence` | `1.0` for source tags, `0.0` unclassified, otherwise HSV confidence |
 
 ## Boundary And Annotation Behaviour
@@ -294,34 +294,6 @@ For final policy/reporting work, the better design is:
 4. Report canonical totals for buildings inside the analysis boundary.
 5. Draw the suburb boundary on the annotation.
 6. Show buffer buildings muted or omit them from the presentation annotation.
-
-## Roof Pitch Extraction
-
-Use this after Stage 1 when a DSM GeoTIFF is available.
-
-```bash
-python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif
-python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif --debug
-
-# Validate and import a manually downloaded ELVIS DSM
-python -m tools.extract_pitch --suburb Clayton --import-dsm ~/Downloads/clayton_dsm.tif
-
-# Download coarse COP30 fallback (30 m resolution — unreliable for individual buildings)
-python -m tools.extract_pitch --suburb Clayton --download-cop30
-```
-
-Recommended DSM source:
-
-- ELVIS 1 m LiDAR for most suburbs. ELVIS has no programmatic API — draw your
-  bbox at elevation.fsdf.org.au, submit the form, and receive a download link by
-  email. Use `--import-dsm` to validate and register the downloaded file.
-- City of Melbourne DSM for inner-city coverage.
-- OpenTopography COP30 only as a coarse fallback. At 30 m resolution, individual
-  building pitches are unreliable; use only for suburb-level sanity checks.
-
-The pitch tool uses RANSAC and SVD plane fitting over DSM points inside each
-building polygon. It writes `stage1_{suburb}_with_pitch.parquet/csv` and a pitch
-map PNG.
 
 ## Running Stage 2
 
@@ -622,8 +594,10 @@ conclusions.
    `SUBURB_CLASSIFIER_QUALITY`.
 5. Pitch is assumed, not measured. Defaults calibrated against Gemini
    validation: residential 12°, gabled/hipped 15°, shallow types 10°.
-   `tools.extract_pitch` (DSM) exists but its output is orphaned and DSM
-   accuracy was judged insufficient; pitch only affects `roof_surface_area_m2`
+   DSM/LiDAR-based pitch extraction was trialled and removed — the elevation
+   data available (ELVIS 1 m, COP30) wasn't precise enough for defensible
+   per-building plane fits. The `pitch_basis` column records which rule
+   produced each `pitch_deg` value. Pitch only affects `roof_surface_area_m2`
    (costing), not energy numbers, which correctly use footprint area with
    horizontal irradiance.
 6. Stage 2 currently uses a single-year BARRA2 climate sample (2007); a proper
@@ -703,10 +677,12 @@ Ranked by impact on the defensibility of the final FYP numbers.
 | Solar irradiance (auto) | NASA POWER REST API | No key needed; auto-fetched; cached under `data/raw/nasa_power/` |
 | Irradiance fallback | User CSV or Melbourne default GHI | Active |
 | Roof attribute validation | Gemini 2.5 Flash (`tools.run_gemini_osm_experiment`) | 507 buildings validated; results stored in `data/output/experiments/` |
-| DSM for pitch | ELVIS 1 m LiDAR | Available but judged insufficiently accurate; assumed pitch used instead |
-| Inner-city DSM | City of Melbourne Open Data | Manual download |
-| Coarse DSM fallback | OpenTopography COP30 | Optional; key required |
 | Suburb boundaries | ABS SA2 or authoritative polygon data | Needed for final boundary handling |
+
+DSM/LiDAR elevation sources (ELVIS 1 m, City of Melbourne Open Data, OpenTopography
+COP30) were trialled for measured roof pitch and dropped — insufficiently precise
+for defensible per-building plane fits. Pitch is assumed only (see `pitch_basis`
+in Stage 1 Columns).
 
 ## Project Structure
 
@@ -738,8 +714,6 @@ Raising Rooves Model/
     gemini_osm_experiment.py   # opt-in HSV-validation experiment
     stage1_visualiser.py
     tile_downloader.py
-    dsm_processor.py
-    pitch_extractor.py
   stage2_irradiance/
     pipeline.py
     run_stage2.py
@@ -759,7 +733,6 @@ Raising Rooves Model/
     build_footprint_index.py
     compare_suburbs.py
     download_tiles.py        # fetch team-shared satellite tiles from Google Drive
-    extract_pitch.py
     run_gemini_osm_experiment.py
     seasonal_analysis.py     # monthly cool-roof benefit/penalty + R_roof sweep
     visualise_results.py

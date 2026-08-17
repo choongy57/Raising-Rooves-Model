@@ -60,7 +60,6 @@ specific stage you're working on (see the table below).
 |---|---|---|
 | `GOOGLE_MAPS_API_KEY` | Satellite tile download (Stage 1) | Stage 1 |
 | `GEMINI_API_KEY` | Gemini roof-assessment experiment (HSV validation) | Experiment only; free tier at https://aistudio.google.com/app/apikey |
-| `OPENTOPO_API_KEY` | COP30 DSM fallback for pitch extraction | Pitch tool |
 Stage 2 needs no key at all — BARRA2 irradiance comes from NCI THREDDS OPeNDAP (public, no auth needed), with NASA POWER as fallback.
 
 ---
@@ -80,7 +79,6 @@ python -m stage2_irradiance.run_stage2 --suburb "Carlton"
 python -m stage3_thermal.run_stage3 --suburb "Carlton"
 
 # Tools
-python -m tools.extract_pitch --suburb Clayton --dsm-file data/raw/dsm/clayton.tif
 python -m tools.visualise_results --suburb Carlton
 python -m tools.compare_suburbs
 ```
