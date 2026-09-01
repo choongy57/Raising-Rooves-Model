@@ -34,6 +34,7 @@ from stage1_segmentation.building_footprint_segmenter import (
     _latlon_to_pixel,
     merge_footprints,
     query_buildings_in_bbox,
+    query_suburb_boundary_building_ids,
 )
 from stage1_segmentation.roof_classifier import classify_roof
 from stage1_segmentation.stage1_visualiser import save_visualisation
@@ -364,6 +365,7 @@ def _building_to_row(
         "classifier_confidence": round(classifier_confidence, 2),
         "absorptance_estimate": round(building.absorptance_estimate, 3) if building.absorptance_estimate is not None else None,
         "absorptance_uncertainty": round(building.absorptance_uncertainty, 3) if building.absorptance_uncertainty is not None else None,
+        "inside_suburb": building.inside_suburb,
     }
 
 
@@ -458,7 +460,7 @@ def run_stage1(
     Returns:
         DataFrame with columns: suburb, building_id, roof_id, area_m2, lat, lon, source,
         building_type, levels, roof_material, roof_colour, roof_shape, pitch_deg,
-        classifier_confidence.
+        classifier_confidence, inside_suburb (True/False/None -- see Step 2b).
     """
     suburb = get_suburb(suburb_name)
     suburb_key = suburb.key
@@ -512,6 +514,28 @@ def run_stage1(
         return pd.DataFrame()
 
     logger.info("Found %d buildings in %s.", len(buildings), suburb_name)
+
+    # ── Step 2b: Cross-reference against the suburb's real OSM boundary ───
+    # The bbox above is a hand-drawn rectangle (config/suburbs.py) used only to
+    # scope the tile download and the candidate footprint query. Whether a
+    # building is *actually* in the suburb is decided here by building_id
+    # membership in OSM's own administrative/place boundary polygon, not by
+    # bbox intersection.
+    logger.info("Step 2b/6: Cross-referencing buildings against OSM's %s boundary...", suburb.name)
+    boundary_ids = query_suburb_boundary_building_ids(suburb.name, south, west, north, east)
+    if boundary_ids is None:
+        logger.warning(
+            "No OSM boundary found for %s -- inside_suburb left unset (bbox membership only).",
+            suburb.name,
+        )
+    else:
+        for bldg in buildings:
+            bldg.inside_suburb = bldg.building_id in boundary_ids
+        n_inside = sum(1 for b in buildings if b.inside_suburb)
+        logger.info(
+            "In-boundary buildings: %d / %d (rest are in the tile bbox but outside %s's real boundary).",
+            n_inside, len(buildings), suburb.name,
+        )
 
     # ── Step 3: Pixel classifier — fill missing roof_material/colour ──────
     logger.info("Step 3/6: Running pixel classifier for buildings without OSM roof tags...")

@@ -68,6 +68,12 @@ benefits of cool roof interventions across Melbourne suburbs.
   Data") with `tools.download_tiles` — teammates don't need a Maps API key.
 - Tracked sample fixture `data/samples/stage1_carlton.parquet` so a fresh
   clone runs Stages 2-3 with no API keys.
+- `inside_suburb` flag on Stage 1 output: buildings are cross-referenced by
+  `building_id` against OSM's own administrative/place boundary relation for
+  the suburb name (Overpass area query), not the rectangular bbox. Bboxes
+  still drive tile download and the candidate footprint query. `None` when
+  OSM has no matching boundary for that suburb name. See
+  `query_suburb_boundary_building_ids` in `building_footprint_segmenter.py`.
 
 ### Next Priorities (ranked — keep in sync with README Roadmap)
 
@@ -77,8 +83,11 @@ benefits of cool roof interventions across Melbourne suburbs.
 2. Validate Stage 3 constants (`H_OUTSIDE`, `COOLING_FRACTION`,
    `HEATING_FRACTION`, COP, R_roof proxy table) against Stuart's NatHERS
    runs / AS-NZS 4859.1, and publish a sensitivity analysis.
-3. Replace rectangular bboxes with true ABS SA2 suburb polygons and an
-   `inside_suburb` flag; report in-boundary totals.
+3. Suburb boundaries: `inside_suburb` now exists (OSM boundary relation, see
+   above). Remaining: report in-boundary totals in Stage 2/3 and
+   `tools.compare_suburbs`, draw the boundary on annotations, and evaluate
+   ABS SA2 polygons as an authoritative cross-check (OSM boundary relations
+   aren't guaranteed to exist or be accurate for every suburb).
 4. Filter non-building footprints from Stage 1 (Gemini found 24% of Clayton
    OSM footprints aren't roofs — car parks, sheds, canopies).
 5. Expand to 3+ suburbs and use `tools.compare_suburbs` for FYP reporting.

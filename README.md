@@ -271,29 +271,43 @@ results may be accepted when confidence and image quality are high.
 | `roof_shape` | Roof shape tag where available |
 | `pitch_deg` | Assumed roof pitch unless DSM pitch has been applied |
 | `classifier_confidence` | `1.0` for source tags, `0.0` unclassified, otherwise HSV confidence |
+| `inside_suburb` | `True`/`False` if the building's OSM `building_id` falls inside the suburb's real OSM administrative/place boundary polygon; `None` if no such boundary was found in OSM for this suburb name (see Boundary section below) |
 
 ## Boundary And Annotation Behaviour
 
-The current suburb definitions use rectangular bboxes. Satellite tiles are fixed
-to a web-map grid, so the downloaded imagery always extends beyond the bbox.
-Stage 1 then expands the footprint query to match the visible tile area so edge
-buildings have overlays.
+The configured suburb bboxes in `config/suburbs.py` are still rectangles, and
+they still drive tile download and the candidate footprint query — satellite
+tiles are fixed to a web-map grid, so downloaded imagery always extends beyond
+the bbox, and Stage 1 expands the footprint query to match the visible tile
+area so edge buildings get overlays.
 
-That means current Stage 1 CSV/parquet outputs can include buildings outside the
-configured bbox. For the latest Clayton run, 7,762 buildings were output:
+That still means Stage 1 CSV/parquet outputs can include buildings outside the
+configured bbox. What changed: each building is now also cross-referenced
+against OSM's own administrative/place boundary relation for the suburb name
+(e.g. Carlton's real locality polygon, not the hand-drawn rectangle) via an
+Overpass area query, and tagged `inside_suburb` by `building_id` membership in
+that polygon. This answers "is this building actually in Carlton?" from OSM's
+own boundary data rather than bbox intersection or centroid-in-bbox heuristics.
 
-- 6,976 centroid-inside the configured Clayton bbox
-- 786 centroid-outside the configured Clayton bbox
+Caveats:
 
-For final policy/reporting work, the better design is:
+- If OSM has no `boundary=administrative` or `place=suburb` relation matching
+  the suburb name in the query bbox, `inside_suburb` is left `None` for every
+  building in that run (falls back to bbox-only membership, same as before).
+- OSM boundary relations are community-maintained and not authoritative the
+  way ABS SA2 digital boundaries are — for FYP reporting, cross-check totals
+  against an ABS SA2 polygon before treating `inside_suburb` counts as final.
 
-1. Keep the tile buffer for imagery and classification.
-2. Use a true suburb polygon, preferably ABS SA2 or another authoritative
-   boundary.
-3. Add `inside_suburb` and/or intersection-area weighting.
-4. Report canonical totals for buildings inside the analysis boundary.
-5. Draw the suburb boundary on the annotation.
-6. Show buffer buildings muted or omit them from the presentation annotation.
+Still open for final policy/reporting work:
+
+1. Report canonical totals for `inside_suburb == True` buildings only (Stage 2/3
+   and `tools.compare_suburbs` currently use all buildings, not just in-boundary
+   ones).
+2. Draw the suburb boundary on the annotation.
+3. Show out-of-boundary buildings muted or omit them from the presentation
+   annotation.
+4. Consider ABS SA2 polygons as an authoritative cross-check or replacement for
+   the OSM boundary relation.
 
 ## Roof Pitch Extraction
 
@@ -661,9 +675,14 @@ Ranked by impact on the defensibility of the final FYP numbers.
    NatHERS runs or AS/NZS 4859.1 simulation, and publish a sensitivity
    analysis over the plausible parameter ranges (all constants live in
    `config/settings.py`).
-3. **True suburb boundaries.** Replace rectangular bboxes with ABS SA2
-   polygons, add an `inside_suburb` flag, report canonical in-boundary totals,
-   and draw the boundary on annotations.
+3. **True suburb boundaries.** `inside_suburb` now exists, tagged by
+   `building_id` membership in OSM's own administrative/place boundary
+   relation for the suburb name (see Boundary And Annotation Behaviour above)
+   — bboxes still drive tile download/query scope. Remaining work: report
+   canonical in-boundary totals in Stage 2/3 and `tools.compare_suburbs`, draw
+   the boundary on annotations, and consider ABS SA2 polygons as an
+   authoritative cross-check since OSM boundary relations aren't guaranteed
+   accurate or present for every suburb.
 4. **Filter non-building footprints from Stage 1.** Gemini validation found
    24% of Clayton OSM footprints are not roofs (car parks, sheds, canopies).
    Add a minimum-area / classifier-confidence gate.

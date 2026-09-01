@@ -76,6 +76,11 @@ class BuildingFootprint:
     absorptance_estimate: Optional[float] = None
     absorptance_uncertainty: Optional[float] = None
 
+    # True/False once cross-referenced against the suburb's real OSM boundary
+    # relation (see query_suburb_boundary_building_ids); None if no boundary
+    # was found and bbox membership is the only available signal.
+    inside_suburb: Optional[bool] = None
+
 
 # ── Coordinate helpers ────────────────────────────────────────────────────────
 
@@ -177,6 +182,11 @@ out body;
 >;
 out skel qt;
 """
+    return _overpass_post(query)
+
+
+def _overpass_post(query: str) -> dict:
+    """Shared POST-with-fallback logic for an arbitrary Overpass QL query string."""
     errors: list[str] = []
     for url in [_OVERPASS_URL, *_OVERPASS_FALLBACK_URLS]:
         for attempt in range(1, 4):
@@ -209,6 +219,77 @@ out skel qt;
     if errors:
         raise RuntimeError("Overpass API failed: " + " || ".join(errors[-3:]))
     return {}
+
+
+def query_suburb_boundary_building_ids(
+    suburb_name: str,
+    south: float,
+    west: float,
+    north: float,
+    east: float,
+) -> Optional[set[str]]:
+    """
+    Return the set of OSM building_ids that fall inside suburb_name's real OSM
+    boundary (an administrative or place=suburb polygon), not a bbox rectangle.
+
+    This answers "is this building actually in Carlton?" using OSM's own
+    locality/suburb geometry, keyed by building_id -- the ID-based membership
+    Flynn asked for, instead of a hand-drawn rectangle from config/suburbs.py.
+
+    The bbox is only a spatial pre-filter on the name search, to avoid matching
+    a same-named suburb/locality elsewhere in the country.
+
+    Returns None if no matching boundary area exists in OSM for this name
+    (callers should fall back to bbox-only membership and log a warning) or on
+    query failure.
+    """
+    search_name = suburb_name.split("(")[0].strip()
+    query = f"""
+[out:json][timeout:{_OVERPASS_TIMEOUT}];
+(
+  area["name"="{search_name}"]["boundary"="administrative"]({south},{west},{north},{east});
+  area["name"="{search_name}"]["place"~"^(suburb|quarter|neighbourhood|town|village)$"]({south},{west},{north},{east});
+)->.a;
+(
+  way["building"](area.a);
+  relation["building"](area.a);
+);
+out body;
+>;
+out skel qt;
+"""
+    try:
+        data = _overpass_post(query)
+    except RuntimeError as exc:
+        logger.warning(
+            "Suburb boundary query failed for '%s': %s -- falling back to bbox-only membership.",
+            suburb_name, exc,
+        )
+        return None
+
+    elements = data.get("elements", [])
+    ids: set[str] = set()
+    for elem in elements:
+        tags = elem.get("tags", {})
+        if "building" not in tags:
+            continue
+        if elem["type"] == "way":
+            ids.add(str(elem["id"]))
+        elif elem["type"] == "relation":
+            ids.add(f"r{elem['id']}")
+
+    if not ids:
+        logger.warning(
+            "No OSM administrative/place boundary named '%s' found in bbox -- "
+            "falling back to bbox-only membership.", search_name,
+        )
+        return None
+
+    logger.info(
+        "OSM boundary query for '%s': %d buildings inside the real suburb polygon.",
+        search_name, len(ids),
+    )
+    return ids
 
 
 def _chain_way_node_refs(way_segs: list[list[int]]) -> list[int]:
