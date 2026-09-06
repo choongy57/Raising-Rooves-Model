@@ -1,6 +1,6 @@
 """
 Tests for the new Stage 1 attribution columns:
-  orientation_deg, roof_surface_area_m2, is_flat, pitch_source.
+  orientation_deg, roof_surface_area_m2, is_flat, pitch_source, pitch_basis.
 """
 
 import math
@@ -81,7 +81,7 @@ def test_row_has_required_columns():
     row = _building_to_row(bldg, "Carlton", 0)
     for col in [
         "orientation_deg", "roof_surface_area_m2", "is_flat",
-        "pitch_source", "absorptance_estimate", "absorptance_uncertainty",
+        "pitch_source", "pitch_basis", "absorptance_estimate", "absorptance_uncertainty",
     ]:
         assert col in row, f"Missing column: {col}"
 
@@ -89,6 +89,29 @@ def test_row_has_required_columns():
 def test_pitch_source_is_assumed():
     row = _building_to_row(_make_building(), "Carlton", 0)
     assert row["pitch_source"] == "assumed"
+
+
+def test_pitch_basis_reflects_roof_shape_tag():
+    row = _building_to_row(_make_building(roof_shape="gabled"), "Carlton", 0)
+    assert row["pitch_basis"] == "roof_shape:gabled"
+
+
+def test_pitch_basis_reflects_multistorey_override():
+    row = _building_to_row(_make_building(levels=6), "Carlton", 0)
+    assert row["pitch_basis"] == "levels>=4"
+
+
+def test_pitch_basis_reflects_building_type():
+    row = _building_to_row(_make_building(building_type="church"), "Carlton", 0)
+    assert row["pitch_basis"] == "building_type:church"
+
+
+def test_pitch_basis_falls_back_to_residential_default():
+    row = _building_to_row(
+        _make_building(roof_shape=None, building_type="residential", levels=None),
+        "Carlton", 0,
+    )
+    assert row["pitch_basis"] == "residential_default"
 
 
 def test_is_flat_true_for_flat_roof():

@@ -110,7 +110,7 @@ SUBURB_CLASSIFIER_QUALITY: dict[str, float] = {
 # ── Roof Pitch ────────────────────────────────────────────────────────────────
 
 # Pitch angle (degrees) below which a roof is classified as flat.
-# Used by Stage 1 pipeline (_assumed_pitch_deg / _building_to_row) and pitch extractor.
+# Used by Stage 1 pipeline (_assumed_pitch_deg / _building_to_row).
 FLAT_PITCH_THRESHOLD_DEG = 5.0
 
 # ── Cool Roof Physics ────────────────────────────────────────────────────────
