@@ -165,13 +165,14 @@ console commands equivalent to the `python -m ...` forms.
 
 You need satellite tiles for Stage 1. Two options:
 
-**Option A — no API key (teammates):** download the team's pre-fetched tiles
-from Google Drive (folder: "Raising Rooves - Shared Data"):
+**Option A — no API key (teammates):** the team's pre-fetched tiles live in
+the Google Drive folder "Raising Rooves - Shared Data", shared read-only
+with your Monash account. Download the suburb zip manually from Drive
+(Shared with me) and extract it so tiles land in `data/raw/tiles/{suburb}/`
+(e.g. `data/raw/tiles/clayton/clayton_19_*.png`).
 
-```bash
-python -m tools.download_tiles --suburb clayton
-python -m tools.download_tiles --all
-```
+(`tools.download_tiles` automates this, but it downloads anonymously and only
+works when the Drive files are link-shared — they aren't, by team decision.)
 
 **Option B — own API key:** add a Google Maps Static API key to `.env`:
 

@@ -72,7 +72,9 @@ benefits of cool roof interventions across Melbourne suburbs.
   `residential_default`) produced each `pitch_deg` value. See
   `DECISION_LOG.md`.
 - Team-shared satellite tiles on Google Drive ("Raising Rooves - Shared
-  Data") with `tools.download_tiles` — teammates don't need a Maps API key.
+  Data"), read-only for teammate Monash accounts — teammates download zips
+  manually from Drive (no Maps API key). `tools.download_tiles` only works
+  when the files are link-shared, which the team declined.
 - Tracked sample fixture `data/samples/stage1_carlton.parquet` so a fresh
   clone runs Stages 2-3 with no API keys.
 

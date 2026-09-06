@@ -3,9 +3,18 @@ Download pre-downloaded satellite tiles from Google Drive.
 
 Satellite tiles are ~300 KB each and a full suburb is ~400-700 MB, so they
 are NOT stored in git.  They live in the team's Google Drive folder
-"Raising Rooves - Shared Data" and this script fetches and extracts them.
+"Raising Rooves - Shared Data", shared read-only with teammates' Monash
+accounts (not link-shared).
 
-Usage:
+Teammates download the suburb zip manually from Drive (Shared with me) and
+extract it so tiles land in data/raw/tiles/{suburb}/.
+
+This script downloads anonymously via the public drive.google.com/uc URL, so
+it only works while the zips are link-shared ("Anyone with the link"). The
+team keeps them account-shared instead, so the script is currently a
+convenience for a future link-share setup — expect a sign-in wall:
+
+Usage (requires link sharing):
     python -m tools.download_tiles --suburb clayton
     python -m tools.download_tiles --suburb carlton
     python -m tools.download_tiles --all
